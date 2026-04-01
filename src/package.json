@@ -1,0 +1,16 @@
+{
+  "name": "sicbo-predictor",
+  "version": "1.0.0",
+  "description": "Tài Xỉu prediction server with multi-algorithm ensemble",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["taixiu", "sicbo", "prediction"],
+  "author": "",
+  "license": "ISC"
+}
