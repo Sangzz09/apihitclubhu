@@ -32,36 +32,51 @@ function fetchSource() {
 
 // ══════════════════════════════════════════════════════════════
 //  PARSE  —  cấu trúc JSON thực tế:
-//  { status:"OK", data:[{ tUB, tUS, gBB, d1, d2, d3, ... }] }
+//  {
+//    status: "OK", code: 200,
+//    data: [{
+//      sid: 2971811,
+//      cmd: 1008,
+//      gid: "vgmn_100",
+//      gi: [
+//        { B:{ tU, tB }, S:{ tU, tB }, aid:1 },
+//        { B:{ tU, tB }, S:{ tU, tB }, aid:2 }
+//      ],
+//      d1, d2, d3   ← xuất hiện khi phiên kết thúc
+//    }]
+//  }
 //
-//  tUS = Total User Small  → cược TÀI  (sum ≥ 11)
-//  tUB = Total User Big    → cược XỈU  (sum ≤ 10)
-//  !! Nếu game của bạn định nghĩa ngược lại hãy đổi 2 dòng bTB/sTB
+//  B = Big  = TÀI   (sum ≥ 11)  →  tB = tiền cược, tU = số người
+//  S = Small= XỈU   (sum ≤ 10)  →  tB = tiền cược, tU = số người
 // ══════════════════════════════════════════════════════════════
 function parseBody(body) {
   if (!body || body.status !== "OK") return null;
   const entry = Array.isArray(body.data) ? body.data[0] : null;
   if (!entry) return null;
 
-  // SID: dùng gBB (Game-round Big-number) làm định danh phiên
-  const sid = String(entry.gBB ?? entry.cmd ?? "?");
+  // SID: dùng sid thực từ API (fallback cmd)
+  const sid = String(entry.sid ?? entry.cmd ?? "?");
 
-  // Số tiền cược theo bên
-  const sTB = Number(entry.tUS ?? 0);   // Tài  (Small)
-  const bTB = Number(entry.tUB ?? 0);   // Xỉu  (Big)
-  const bTU = 0;
-  const sTU = 0;
+  // gi[0] = bàn chính (aid:1)
+  const gi0 = Array.isArray(entry.gi) ? entry.gi[0] : null;
+  if (!gi0) return null;
+
+  // B = Big = TÀI, S = Small = XỈU
+  const sTB = Number(gi0.B?.tB ?? 0);   // Tài: tổng tiền cược
+  const sTU = Number(gi0.B?.tU ?? 0);   // Tài: số người cược
+  const bTB = Number(gi0.S?.tB ?? 0);   // Xỉu: tổng tiền cược
+  const bTU = Number(gi0.S?.tU ?? 0);   // Xỉu: số người cược
 
   const total = bTB + sTB;
   // ratio = tỉ lệ tiền cược Tài / tổng  →  > 0.5 nghiêng Tài
   const ratio = total > 0 ? sTB / total : 0.5;
 
-  // Xúc xắc (nếu phiên đã kết thúc API mới có d1/d2/d3)
+  // Xúc xắc — API trả d1/d2/d3 khi phiên kết thúc
   const d1 = entry.d1 ?? null;
   const d2 = entry.d2 ?? null;
   const d3 = entry.d3 ?? null;
   const dice = (d1 !== null && d2 !== null && d3 !== null)
-    ? { d1, d2, d3, sum: d1 + d2 + d3 }
+    ? { d1: Number(d1), d2: Number(d2), d3: Number(d3), sum: Number(d1) + Number(d2) + Number(d3) }
     : null;
 
   return { sid, bTB, sTB, bTU, sTU, ratio, total, dice };
@@ -76,7 +91,7 @@ function inferType(ratio, prevType, dice) {
   if (dice && dice.sum !== null && dice.sum !== undefined) {
     return dice.sum >= 11 ? "T" : "X";
   }
-  // Fallback: theo ratio dòng tiền (contrarian logic)
+  // Fallback: theo ratio dòng tiền
   if (ratio > 0.58) return "T";
   if (ratio < 0.42) return "X";
   return prevType ?? (ratio >= 0.5 ? "T" : "X");
@@ -89,7 +104,7 @@ function ingest(parsed) {
   const { sid, bTB, sTB, bTU, sTU, ratio, total, dice } = parsed;
 
   if (sid === lastSid) {
-    // Cùng phiên → cập nhật pending (cược có thể thay đổi)
+    // Cùng phiên → cập nhật pending (cược / dice có thể thay đổi)
     if (pendingSession) {
       Object.assign(pendingSession, { bTB, sTB, bTU, sTU, ratio, total, dice });
     } else {
@@ -150,6 +165,7 @@ function detectPattern(seq) {
   if (seq.length < 4) return null;
   const s = seq.join("");
 
+  // Bệt
   const bm = s.match(/^(T{3,}|X{3,})/);
   if (bm) {
     const len  = bm[0].length;
@@ -159,6 +175,7 @@ function detectPattern(seq) {
     return { name:`Bệt ${same==="T"?"Tài":"Xỉu"}(${len})`, next, conf };
   }
 
+  // Cầu 1-1
   let alt = 0;
   for (let i = 0; i < Math.min(seq.length, 12); i++) {
     if (i===0 || seq[i]!==seq[i-1]) alt++;
@@ -167,24 +184,30 @@ function detectPattern(seq) {
   if (alt >= 6) return { name:"Cầu 1-1 dài", next: seq[0]==="T"?"X":"T", conf:0.73 };
   if (alt >= 4) return { name:"Cầu 1-1",      next: seq[0]==="T"?"X":"T", conf:0.64 };
 
+  // Cầu 2-2
   if (s.length>=8 && s[0]===s[1] && s[2]===s[3] && s[0]!==s[2] && s[4]===s[5] && s[0]===s[4])
     return { name:"Cầu 2-2", next:s[0], conf:0.68 };
   if (s.length>=6 && s[0]!==s[1] && s[1]===s[2] && s[3]===s[4] && s[1]!==s[3])
     return { name:"Cầu 2-2 giữa", next:s[0]==="T"?"X":"T", conf:0.63 };
 
+  // Cầu 3-3
   if (s.length>=6 && s[0]===s[1] && s[1]===s[2] && s[3]===s[4] && s[4]===s[5] && s[0]!==s[3])
     return { name:"Cầu 3-3", next:s[0], conf:0.65 };
 
+  // Cầu 4-4
   if (s.length>=8 && s.slice(0,4).split("").every(c=>c===s[0]) &&
       s.slice(4,8).split("").every(c=>c===s[4]) && s[0]!==s[4])
     return { name:"Cầu 4-4", next:s[0], conf:0.66 };
 
+  // Cầu 2-1
   if (s.length>=6 && s[0]===s[1] && s[2]!==s[1] && s[3]===s[4] && s[5]!==s[4] && s[0]===s[3])
     return { name:"Cầu 2-1", next:s[0], conf:0.62 };
 
+  // Cầu 1-2
   if (s.length>=6 && s[0]!==s[1] && s[1]===s[2] && s[3]!==s[4] && s[4]===s[5])
     return { name:"Cầu 1-2", next:s[0], conf:0.61 };
 
+  // Chu Kỳ
   for (const p of [2,3,4]) {
     if (s.length >= p*3) {
       const c = s.slice(0,p);
@@ -193,6 +216,7 @@ function detectPattern(seq) {
     }
   }
 
+  // Cầu Gương
   if (s.length>=5 && s[0]===s[4] && s[1]===s[3] && s[1]!==s[0])
     return { name:"Cầu Gương", next:s[1]==="T"?"X":"T", conf:0.60 };
 
@@ -530,9 +554,8 @@ http.createServer(async (req, res) => {
       return;
     }
 
-    // kết quả phiên đã khoá = history[0]
-    const lastLocked = history[0];
-    const ketQua     = lastLocked
+    const lastLocked  = history[0];
+    const ketQua      = lastLocked
       ? (lastLocked.type === "T" ? "Tài" : "Xỉu")
       : null;
 
@@ -587,6 +610,8 @@ http.createServer(async (req, res) => {
         xiu_pct:  Math.round((1 - h.ratio) * 100) + "%",
         cuoc_tai: h.sTB,
         cuoc_xiu: h.bTB,
+        nguoi_tai: h.sTU,
+        nguoi_xiu: h.bTU,
         xuc_xac:  formatDice(h.dice ?? null),
         ket_qua:  h.type === "T" ? "Tài" : "Xỉu"
       }))
