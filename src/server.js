@@ -1,7 +1,7 @@
 const https = require("https");
 const http  = require("http");
 
-const SOURCE_URL  = "https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=b5&gid=vgmn_100";
+const SOURCE_URL  = "https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid=vgmn_100";
 const PORT        = process.env.PORT || 3000;
 const HISTORY_MAX = 500;
 
