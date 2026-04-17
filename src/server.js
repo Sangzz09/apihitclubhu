@@ -31,37 +31,55 @@ function fetchSource() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PARSE
+//  PARSE  —  cấu trúc JSON thực tế:
+//  { status:"OK", data:[{ tUB, tUS, gBB, d1, d2, d3, ... }] }
+//
+//  tUS = Total User Small  → cược TÀI  (sum ≥ 11)
+//  tUB = Total User Big    → cược XỈU  (sum ≤ 10)
+//  !! Nếu game của bạn định nghĩa ngược lại hãy đổi 2 dòng bTB/sTB
 // ══════════════════════════════════════════════════════════════
 function parseBody(body) {
   if (!body || body.status !== "OK") return null;
   const entry = Array.isArray(body.data) ? body.data[0] : null;
   if (!entry) return null;
 
-  const sid = String(entry.sid ?? "?");
-  const gi  = Array.isArray(entry.gi) ? entry.gi[0] : null;
-  if (!gi) return null;
+  // SID: dùng gBB (Game-round Big-number) làm định danh phiên
+  const sid = String(entry.gBB ?? entry.cmd ?? "?");
 
-  const bTB   = Number(gi.B?.tB ?? 0);
-  const sTB   = Number(gi.S?.tB ?? 0);
-  const bTU   = Number(gi.B?.tU ?? 0);
-  const sTU   = Number(gi.S?.tU ?? 0);
+  // Số tiền cược theo bên
+  const sTB = Number(entry.tUS ?? 0);   // Tài  (Small)
+  const bTB = Number(entry.tUB ?? 0);   // Xỉu  (Big)
+  const bTU = 0;
+  const sTU = 0;
+
   const total = bTB + sTB;
+  // ratio = tỉ lệ tiền cược Tài / tổng  →  > 0.5 nghiêng Tài
   const ratio = total > 0 ? sTB / total : 0.5;
 
-  // Lấy xúc xắc nếu có (gi.dice hoặc gi.d)
-  const dice = gi.dice ?? gi.d ?? null;
+  // Xúc xắc (nếu phiên đã kết thúc API mới có d1/d2/d3)
+  const d1 = entry.d1 ?? null;
+  const d2 = entry.d2 ?? null;
+  const d3 = entry.d3 ?? null;
+  const dice = (d1 !== null && d2 !== null && d3 !== null)
+    ? { d1, d2, d3, sum: d1 + d2 + d3 }
+    : null;
 
   return { sid, bTB, sTB, bTU, sTU, ratio, total, dice };
 }
 
 // ══════════════════════════════════════════════════════════════
 //  SUY RA KẾT QUẢ
+//  Ưu tiên: xúc xắc (chính xác) → ratio cược (ước lượng)
 // ══════════════════════════════════════════════════════════════
-function inferType(ratio, prevType) {
-  if (ratio > 0.58) return "X";
-  if (ratio < 0.42) return "T";
-  return prevType ?? (ratio >= 0.5 ? "X" : "T");
+function inferType(ratio, prevType, dice) {
+  // Có xúc xắc → kết quả thực 100%
+  if (dice && dice.sum !== null && dice.sum !== undefined) {
+    return dice.sum >= 11 ? "T" : "X";
+  }
+  // Fallback: theo ratio dòng tiền (contrarian logic)
+  if (ratio > 0.58) return "T";
+  if (ratio < 0.42) return "X";
+  return prevType ?? (ratio >= 0.5 ? "T" : "X");
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -71,6 +89,7 @@ function ingest(parsed) {
   const { sid, bTB, sTB, bTU, sTU, ratio, total, dice } = parsed;
 
   if (sid === lastSid) {
+    // Cùng phiên → cập nhật pending (cược có thể thay đổi)
     if (pendingSession) {
       Object.assign(pendingSession, { bTB, sTB, bTU, sTU, ratio, total, dice });
     } else {
@@ -79,9 +98,10 @@ function ingest(parsed) {
     return false;
   }
 
+  // Phiên mới → chốt phiên cũ vào history
   if (pendingSession) {
     const prevType = history[0]?.type ?? null;
-    pendingSession.type = inferType(pendingSession.ratio, prevType);
+    pendingSession.type = inferType(pendingSession.ratio, prevType, pendingSession.dice);
     history.unshift(pendingSession);
     if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
   }
@@ -124,7 +144,7 @@ function recordActual(actual) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PATTERN DETECTION (GIỮ NGUYÊN)
+//  PATTERN DETECTION
 // ══════════════════════════════════════════════════════════════
 function detectPattern(seq) {
   if (seq.length < 4) return null;
@@ -180,7 +200,7 @@ function detectPattern(seq) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ALGORITHMS (GIỮ NGUYÊN)
+//  ALGORITHMS
 // ══════════════════════════════════════════════════════════════
 function algoMarkov3(seq) {
   if (seq.length<20) return null;
@@ -369,15 +389,15 @@ function algoStreakLen(seq) {
 function algoRatio(hist) {
   if(!hist.length) return null;
   const r=hist[0].ratio;
-  if(r>0.62) return {next:"X",conf:0.50+(r-0.50)*0.55};
-  if(r<0.38) return {next:"T",conf:0.50+(0.50-r)*0.55};
+  if(r>0.62) return {next:"T",conf:0.50+(r-0.50)*0.55};
+  if(r<0.38) return {next:"X",conf:0.50+(0.50-r)*0.55};
   return null;
 }
 function algoRatioMa(hist) {
   if(hist.length<5) return null;
   const ma=hist.slice(0,5).reduce((s,h)=>s+h.ratio,0)/5;
-  if(ma>0.60) return {next:"X",conf:0.52+(ma-0.50)*0.40};
-  if(ma<0.40) return {next:"T",conf:0.52+(0.50-ma)*0.40};
+  if(ma>0.60) return {next:"T",conf:0.52+(ma-0.50)*0.40};
+  if(ma<0.40) return {next:"X",conf:0.52+(0.50-ma)*0.40};
   return null;
 }
 function algoContrarian(hist) {
@@ -386,13 +406,13 @@ function algoContrarian(hist) {
   const cur=hist[0];
   if((cur.total||0) < avgTotal*0.5) return null;
   const r=cur.ratio;
-  if(r>0.65) return {next:"X",conf:0.58+(r-0.65)*0.40};
-  if(r<0.35) return {next:"T",conf:0.58+(0.35-r)*0.40};
+  if(r>0.65) return {next:"T",conf:0.58+(r-0.65)*0.40};
+  if(r<0.35) return {next:"X",conf:0.58+(0.35-r)*0.40};
   return null;
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ENSEMBLE (GIỮ NGUYÊN)
+//  ENSEMBLE
 // ══════════════════════════════════════════════════════════════
 function predict(hist) {
   if (hist.length < 3) return {
@@ -476,10 +496,18 @@ async function syncHistory() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  FORMAT PATTERN STRING  →  "Cầu X – phân tích AI → tiếp Y"
+//  FORMAT PATTERN STRING
 // ══════════════════════════════════════════════════════════════
 function formatPattern(cauType, duDoan) {
   return `${cauType} – phân tích AI → tiếp ${duDoan}`;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FORMAT XÚC XẮC
+// ══════════════════════════════════════════════════════════════
+function formatDice(dice) {
+  if (!dice) return null;
+  return `🎲 ${dice.d1}-${dice.d2}-${dice.d3} (tổng ${dice.sum}) → ${dice.sum >= 11 ? "Tài" : "Xỉu"}`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -502,23 +530,20 @@ http.createServer(async (req, res) => {
       return;
     }
 
-    // ket_qua phiên hiện tại (phiên đã khoá = history[0])
+    // kết quả phiên đã khoá = history[0]
     const lastLocked = history[0];
     const ketQua     = lastLocked
       ? (lastLocked.type === "T" ? "Tài" : "Xỉu")
       : null;
 
-    // xúc xắc phiên đã khoá
-    const xucXac = lastLocked?.dice ?? null;
-
-    const pred       = predict(history);
+    const pred        = predict(history);
     const phienDuDoan = String(Number(cur.phien) + 1);
 
     res.writeHead(200);
     res.end(JSON.stringify({
       phien_hien_tai: Number(cur.phien),
       ket_qua:        ketQua,
-      xuc_xac:        xucXac,
+      xuc_xac:        formatDice(lastLocked?.dice ?? null),
       phien_du_doan:  Number(phienDuDoan),
       du_doan:        pred.next,
       do_tin_cay:     pred.conf + "%",
@@ -562,7 +587,7 @@ http.createServer(async (req, res) => {
         xiu_pct:  Math.round((1 - h.ratio) * 100) + "%",
         cuoc_tai: h.sTB,
         cuoc_xiu: h.bTB,
-        xuc_xac:  h.dice ?? null,
+        xuc_xac:  formatDice(h.dice ?? null),
         ket_qua:  h.type === "T" ? "Tài" : "Xỉu"
       }))
     }));
