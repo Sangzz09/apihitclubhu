@@ -4,19 +4,11 @@ const http  = require("http");
 const SOURCE_URL  = "https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid=vgmn_100";
 const PORT        = process.env.PORT || 3000;
 const HISTORY_MAX = 500;
+const BOT_ID      = "@sewdangcap";
 
-// ══════════════════════════════════════════════════════════════
-//  JSON cấu trúc:
-//  data[0] = { sid, cmd, gi:[{ B:{tU,tB}, S:{tU,tB}, aid }] }
-//  B = Bé/Xỉu (Small),  S = Sộ/Tài (Big)
-//  ratio = S.tB / (B.tB + S.tB)  →  tỷ lệ tiền cược Tài
-//
-//  Vì API không trả dice/kết quả trực tiếp, kết quả phiên được
-//  suy ra bằng contrarian logic: đám đông cược Tài → Xỉu thắng
-// ══════════════════════════════════════════════════════════════
-let history        = [];   // newest → oldest
+let history        = [];
 let lastSid        = null;
-let pendingSession = null; // phiên đang chạy (chưa khoá)
+let pendingSession = null;
 
 // ══════════════════════════════════════════════════════════════
 //  FETCH
@@ -50,42 +42,43 @@ function parseBody(body) {
   const gi  = Array.isArray(entry.gi) ? entry.gi[0] : null;
   if (!gi) return null;
 
-  const bTB   = Number(gi.B?.tB ?? 0);   // tiền cược Xỉu
-  const sTB   = Number(gi.S?.tB ?? 0);   // tiền cược Tài
-  const bTU   = Number(gi.B?.tU ?? 0);   // người cược Xỉu
-  const sTU   = Number(gi.S?.tU ?? 0);   // người cược Tài
+  const bTB   = Number(gi.B?.tB ?? 0);
+  const sTB   = Number(gi.S?.tB ?? 0);
+  const bTU   = Number(gi.B?.tU ?? 0);
+  const sTU   = Number(gi.S?.tU ?? 0);
   const total = bTB + sTB;
-  const ratio = total > 0 ? sTB / total : 0.5; // tỷ lệ tiền Tài [0..1]
+  const ratio = total > 0 ? sTB / total : 0.5;
 
-  return { sid, bTB, sTB, bTU, sTU, ratio, total };
+  // Lấy xúc xắc nếu có (gi.dice hoặc gi.d)
+  const dice = gi.dice ?? gi.d ?? null;
+
+  return { sid, bTB, sTB, bTU, sTU, ratio, total, dice };
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SUY RA KẾT QUẢ từ tỷ lệ cược
+//  SUY RA KẾT QUẢ
 // ══════════════════════════════════════════════════════════════
 function inferType(ratio, prevType) {
-  if (ratio > 0.58) return "X";   // đám đông Tài → Xỉu thắng
-  if (ratio < 0.42) return "T";   // đám đông Xỉu → Tài thắng
+  if (ratio > 0.58) return "X";
+  if (ratio < 0.42) return "T";
   return prevType ?? (ratio >= 0.5 ? "X" : "T");
 }
 
 // ══════════════════════════════════════════════════════════════
-//  INGEST: khi sid thay đổi → khoá phiên cũ vào history
+//  INGEST
 // ══════════════════════════════════════════════════════════════
 function ingest(parsed) {
-  const { sid, bTB, sTB, bTU, sTU, ratio, total } = parsed;
+  const { sid, bTB, sTB, bTU, sTU, ratio, total, dice } = parsed;
 
   if (sid === lastSid) {
-    // Cùng phiên → cập nhật live
     if (pendingSession) {
-      Object.assign(pendingSession, { bTB, sTB, bTU, sTU, ratio, total });
+      Object.assign(pendingSession, { bTB, sTB, bTU, sTU, ratio, total, dice });
     } else {
-      pendingSession = { phien: sid, bTB, sTB, bTU, sTU, ratio, total };
+      pendingSession = { phien: sid, bTB, sTB, bTU, sTU, ratio, total, dice };
     }
     return false;
   }
 
-  // Phiên mới → khoá pending vào history
   if (pendingSession) {
     const prevType = history[0]?.type ?? null;
     pendingSession.type = inferType(pendingSession.ratio, prevType);
@@ -93,7 +86,7 @@ function ingest(parsed) {
     if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
   }
 
-  pendingSession = { phien: sid, bTB, sTB, bTU, sTU, ratio, total };
+  pendingSession = { phien: sid, bTB, sTB, bTU, sTU, ratio, total, dice };
   lastSid = sid;
   return true;
 }
@@ -131,13 +124,12 @@ function recordActual(actual) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PATTERN DETECTION
+//  PATTERN DETECTION (GIỮ NGUYÊN)
 // ══════════════════════════════════════════════════════════════
 function detectPattern(seq) {
   if (seq.length < 4) return null;
   const s = seq.join("");
 
-  // Bệt
   const bm = s.match(/^(T{3,}|X{3,})/);
   if (bm) {
     const len  = bm[0].length;
@@ -147,7 +139,6 @@ function detectPattern(seq) {
     return { name:`Bệt ${same==="T"?"Tài":"Xỉu"}(${len})`, next, conf };
   }
 
-  // Cầu 1-1
   let alt = 0;
   for (let i = 0; i < Math.min(seq.length, 12); i++) {
     if (i===0 || seq[i]!==seq[i-1]) alt++;
@@ -156,30 +147,24 @@ function detectPattern(seq) {
   if (alt >= 6) return { name:"Cầu 1-1 dài", next: seq[0]==="T"?"X":"T", conf:0.73 };
   if (alt >= 4) return { name:"Cầu 1-1",      next: seq[0]==="T"?"X":"T", conf:0.64 };
 
-  // Cầu 2-2
   if (s.length>=8 && s[0]===s[1] && s[2]===s[3] && s[0]!==s[2] && s[4]===s[5] && s[0]===s[4])
     return { name:"Cầu 2-2", next:s[0], conf:0.68 };
   if (s.length>=6 && s[0]!==s[1] && s[1]===s[2] && s[3]===s[4] && s[1]!==s[3])
     return { name:"Cầu 2-2 giữa", next:s[0]==="T"?"X":"T", conf:0.63 };
 
-  // Cầu 3-3
   if (s.length>=6 && s[0]===s[1] && s[1]===s[2] && s[3]===s[4] && s[4]===s[5] && s[0]!==s[3])
     return { name:"Cầu 3-3", next:s[0], conf:0.65 };
 
-  // Cầu 4-4
   if (s.length>=8 && s.slice(0,4).split("").every(c=>c===s[0]) &&
       s.slice(4,8).split("").every(c=>c===s[4]) && s[0]!==s[4])
     return { name:"Cầu 4-4", next:s[0], conf:0.66 };
 
-  // Cầu 2-1
   if (s.length>=6 && s[0]===s[1] && s[2]!==s[1] && s[3]===s[4] && s[5]!==s[4] && s[0]===s[3])
     return { name:"Cầu 2-1", next:s[0], conf:0.62 };
 
-  // Cầu 1-2
   if (s.length>=6 && s[0]!==s[1] && s[1]===s[2] && s[3]!==s[4] && s[4]===s[5])
     return { name:"Cầu 1-2", next:s[0], conf:0.61 };
 
-  // Chu kỳ 2/3/4
   for (const p of [2,3,4]) {
     if (s.length >= p*3) {
       const c = s.slice(0,p);
@@ -188,7 +173,6 @@ function detectPattern(seq) {
     }
   }
 
-  // Cầu gương
   if (s.length>=5 && s[0]===s[4] && s[1]===s[3] && s[1]!==s[0])
     return { name:"Cầu Gương", next:s[1]==="T"?"X":"T", conf:0.60 };
 
@@ -196,7 +180,7 @@ function detectPattern(seq) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ALGORITHMS
+//  ALGORITHMS (GIỮ NGUYÊN)
 // ══════════════════════════════════════════════════════════════
 function algoMarkov3(seq) {
   if (seq.length<20) return null;
@@ -212,7 +196,6 @@ function algoMarkov3(seq) {
   if(row.X>row.T) return {next:"X",conf:0.50+(row.X/tot-0.50)*0.68};
   return null;
 }
-
 function algoMarkov2(seq) {
   if (seq.length<15) return null;
   const t={};
@@ -227,7 +210,6 @@ function algoMarkov2(seq) {
   if(row.X>row.T) return {next:"X",conf:0.50+(row.X/tot-0.50)*0.70};
   return null;
 }
-
 function algoMarkov1(seq) {
   if (seq.length<10) return null;
   const t={T:{T:0,X:0},X:{T:0,X:0}};
@@ -237,7 +219,6 @@ function algoMarkov1(seq) {
   if(row.X>row.T) return {next:"X",conf:0.50+(row.X/tot-0.50)*0.65};
   return null;
 }
-
 function algoFreq(seq) {
   const n20=Math.min(seq.length,20), n50=Math.min(seq.length,50);
   const rT=seq.slice(0,n20).filter(x=>x==="T").length/n20*0.6
@@ -247,7 +228,6 @@ function algoFreq(seq) {
   if(rX>0.60) return {next:"T",conf:0.50+(rX-0.50)*0.60};
   return null;
 }
-
 function algoLuong(seq) {
   if(seq.length<8) return null;
   const w=seq.slice(0,8); let tr=0;
@@ -256,14 +236,12 @@ function algoLuong(seq) {
   if(tr>=7) return {next:w[0]==="T"?"X":"T",conf:0.64};
   return null;
 }
-
 function algoStreak5(seq) {
   if(seq.length<5) return null;
   const f=seq[0];
   if(seq.slice(0,5).every(x=>x===f)) return {next:f==="T"?"X":"T",conf:0.67};
   return null;
 }
-
 function algoEntropy(seq) {
   const n=Math.min(seq.length,20); const sub=seq.slice(0,n);
   let tr=0; for(let i=1;i<sub.length;i++) if(sub[i]!==sub[i-1]) tr++;
@@ -272,7 +250,6 @@ function algoEntropy(seq) {
   if(e<=0.38) return {next:sub[0],conf:0.61};
   return {next:sub[0]==="T"?"X":"T",conf:0.59};
 }
-
 function algoChuKy(seq) {
   if(seq.length<12) return null;
   for(let p=2;p<=6;p++) {
@@ -284,7 +261,6 @@ function algoChuKy(seq) {
   }
   return null;
 }
-
 function algoAutoCorr(seq) {
   if(seq.length<20) return null;
   const n=Math.min(seq.length,40);
@@ -298,7 +274,6 @@ function algoAutoCorr(seq) {
   if(ac1<-0.15) return {next:seq[0]==="T"?"X":"T",conf:0.54+Math.min(-ac1*0.4,0.10)};
   return null;
 }
-
 function algoMomentum(seq) {
   if(seq.length<30) return null;
   const s=seq.slice(0,5).filter(x=>x==="T").length/5;
@@ -308,7 +283,6 @@ function algoMomentum(seq) {
   if(d<-0.25) return {next:"X",conf:0.55+Math.min(-d*0.3,0.08)};
   return null;
 }
-
 function algoBayesian(seq) {
   if(seq.length<15) return null;
   let logOdds=0;
@@ -322,7 +296,6 @@ function algoBayesian(seq) {
   if(pT<0.42) return {next:"X",conf:0.50+(0.50-pT)*0.8};
   return null;
 }
-
 function algoNgram4(seq) {
   if(seq.length<25) return null;
   const t={};
@@ -337,7 +310,6 @@ function algoNgram4(seq) {
   if(row.X>row.T) return {next:"X",conf:0.50+(row.X/tot-0.50)*0.72};
   return null;
 }
-
 function algoReversal(seq) {
   if(seq.length<20) return null;
   let sLen=1; while(sLen<seq.length&&seq[sLen]===seq[0]) sLen++;
@@ -354,7 +326,6 @@ function algoReversal(seq) {
   if(pr<0.35) return {next:seq[0],conf:0.52+(1-pr)*0.10};
   return null;
 }
-
 function algoChiSq(seq) {
   if(seq.length<30) return null;
   const obs={TT:0,TX:0,XT:0,XX:0};
@@ -371,7 +342,6 @@ function algoChiSq(seq) {
   if(seq[0]==="X"&&pXX<0.40) return {next:"T",conf:0.52+(1-pXX)*0.10};
   return null;
 }
-
 function algoTrendFollow(seq) {
   if(seq.length<12) return null;
   const v=seq.slice(0,20).map(x=>x==="T"?1:0);
@@ -381,7 +351,6 @@ function algoTrendFollow(seq) {
   if(e5<e12-0.08) return {next:"X",conf:0.55};
   return null;
 }
-
 function algoStreakLen(seq) {
   if(seq.length<20) return null;
   const streaks=[]; let cur=1;
@@ -397,8 +366,6 @@ function algoStreakLen(seq) {
   if(curLen===1&&curLen<avgLen*0.6) return {next:seq[0],conf:0.54};
   return null;
 }
-
-// Ratio-based (dùng tỷ lệ tiền cược thực tế từ API)
 function algoRatio(hist) {
   if(!hist.length) return null;
   const r=hist[0].ratio;
@@ -406,7 +373,6 @@ function algoRatio(hist) {
   if(r<0.38) return {next:"T",conf:0.50+(0.50-r)*0.55};
   return null;
 }
-
 function algoRatioMa(hist) {
   if(hist.length<5) return null;
   const ma=hist.slice(0,5).reduce((s,h)=>s+h.ratio,0)/5;
@@ -414,7 +380,6 @@ function algoRatioMa(hist) {
   if(ma<0.40) return {next:"T",conf:0.52+(0.50-ma)*0.40};
   return null;
 }
-
 function algoContrarian(hist) {
   if(hist.length<10) return null;
   const avgTotal=hist.slice(1,11).reduce((s,h)=>s+(h.total||0),0)/10;
@@ -427,7 +392,7 @@ function algoContrarian(hist) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ENSEMBLE — chỉ dự đoán 1 phiên tiếp theo
+//  ENSEMBLE (GIỮ NGUYÊN)
 // ══════════════════════════════════════════════════════════════
 function predict(hist) {
   if (hist.length < 3) return {
@@ -511,6 +476,13 @@ async function syncHistory() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  FORMAT PATTERN STRING  →  "Cầu X – phân tích AI → tiếp Y"
+// ══════════════════════════════════════════════════════════════
+function formatPattern(cauType, duDoan) {
+  return `${cauType} – phân tích AI → tiếp ${duDoan}`;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  HTTP SERVER
 // ══════════════════════════════════════════════════════════════
 http.createServer(async (req, res) => {
@@ -520,32 +492,38 @@ http.createServer(async (req, res) => {
 
   const url = new URL(req.url, "http://localhost");
 
-  // ── /predict  (dự đoán 1 phiên tiếp theo) ─────────────────
+  // ── /predict ───────────────────────────────────────────────
   if (url.pathname === "/predict" || url.pathname === "/") {
     await syncHistory();
     const cur = pendingSession ?? history[0];
     if (!cur) {
       res.writeHead(503);
-      res.end(JSON.stringify({ error:"Chưa có dữ liệu" }));
+      res.end(JSON.stringify({ error: "Chưa có dữ liệu" }));
       return;
     }
-    const pred    = predict(history);
-    const ratioPct = Math.round((cur.ratio ?? 0.5) * 100);
+
+    // ket_qua phiên hiện tại (phiên đã khoá = history[0])
+    const lastLocked = history[0];
+    const ketQua     = lastLocked
+      ? (lastLocked.type === "T" ? "Tài" : "Xỉu")
+      : null;
+
+    // xúc xắc phiên đã khoá
+    const xucXac = lastLocked?.dice ?? null;
+
+    const pred       = predict(history);
+    const phienDuDoan = String(Number(cur.phien) + 1);
+
     res.writeHead(200);
     res.end(JSON.stringify({
-      phien_hien_tai:  cur.phien,
-      cuoc_tai:        `${(cur.sTB||0).toLocaleString()} (${ratioPct}%)`,
-      cuoc_xiu:        `${(cur.bTB||0).toLocaleString()} (${100-ratioPct}%)`,
-      nguoi_cuoc_tai:  cur.sTU,
-      nguoi_cuoc_xiu:  cur.bTU,
-      phien_tiep_theo: String(Number(cur.phien) + 1),
-      du_doan:         pred.next,
-      do_tin_cay:      pred.conf + "%",
-      loai_cau:        pred.cauType,
-      pattern_16:      pred.pattern,
-      phieu_Tai:       pred.votesT,
-      phieu_Xiu:       pred.votesX,
-      lich_su_count:   history.length
+      phien_hien_tai: Number(cur.phien),
+      ket_qua:        ketQua,
+      xuc_xac:        xucXac,
+      phien_du_doan:  Number(phienDuDoan),
+      du_doan:        pred.next,
+      do_tin_cay:     pred.conf + "%",
+      pattern:        formatPattern(pred.cauType, pred.next),
+      id:             BOT_ID
     }));
     return;
   }
@@ -555,7 +533,7 @@ http.createServer(async (req, res) => {
     await syncHistory();
     if (!history.length) {
       res.writeHead(503);
-      res.end(JSON.stringify({ error:"Chưa có dữ liệu" }));
+      res.end(JSON.stringify({ error: "Chưa có dữ liệu" }));
       return;
     }
     const pred = predict(history);
@@ -584,6 +562,7 @@ http.createServer(async (req, res) => {
         xiu_pct:  Math.round((1 - h.ratio) * 100) + "%",
         cuoc_tai: h.sTB,
         cuoc_xiu: h.bTB,
+        xuc_xac:  h.dice ?? null,
         ket_qua:  h.type === "T" ? "Tài" : "Xỉu"
       }))
     }));
@@ -595,7 +574,7 @@ http.createServer(async (req, res) => {
     await syncHistory();
     if (!history.length) {
       res.writeHead(503);
-      res.end(JSON.stringify({ error:"Chưa có dữ liệu" }));
+      res.end(JSON.stringify({ error: "Chưa có dữ liệu" }));
       return;
     }
     const seq = history.map(h => h.type);
