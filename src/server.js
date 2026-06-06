@@ -472,150 +472,189 @@ function generateFakeDiceForPrediction(pred, hist) {
 // HTML BIỂU ĐỒ (giống game thật)
 // ══════════════════════════════════════════════════════════════
 function renderChartHTML(hist, pred, fakeDice) {
-  // Lấy 20 phiên gần nhất + 1 phiên dự đoán
   const displayHist = hist.filter(h => h.dice).slice(0, 19);
-  displayHist.reverse(); // cũ → mới (trái → phải)
+  displayHist.reverse();
 
-  // Thêm phiên dự đoán vào cuối
   const predPhien = displayHist.length
     ? String(Number(displayHist[displayHist.length - 1].phien) + 1)
     : "???";
 
   const allPoints = [
     ...displayHist.map(h => ({
-      phien: h.phien,
-      sum: h.dice.sum,
-      d1: h.dice.d1,
-      d2: h.dice.d2,
-      d3: h.dice.d3,
-      type: h.type,
-      fake: false
+      phien: h.phien, sum: h.dice.sum,
+      d1: h.dice.d1, d2: h.dice.d2, d3: h.dice.d3,
+      type: h.type, fake: false
     })),
-    {
-      phien: predPhien,
-      sum: fakeDice.sum,
-      d1: fakeDice.d1,
-      d2: fakeDice.d2,
-      d3: fakeDice.d3,
-      type: pred.next,
-      fake: true
-    }
+    { phien: predPhien, sum: fakeDice.sum,
+      d1: fakeDice.d1, d2: fakeDice.d2, d3: fakeDice.d3,
+      type: pred.next, fake: true }
   ];
 
   const n = allPoints.length;
-  if (n < 2) return "<p style='color:#fff'>Chưa đủ dữ liệu</p>";
+  if (n < 2) return "";
 
-  // SVG dimensions
-  const W = 900, H_TOP = 200, H_BOT = 180, PAD = 50, BOT_PAD = 30;
-  const colW = (W - PAD * 2) / (n - 1);
+  // ── Kích thước SVG responsive ──────────────────────────────
+  const W = 1000;
+  const PL = 52, PR = 20;          // padding left/right
+  const PT = 28, PB = 28;          // padding top/bottom (trong vùng chart)
+  const H_TOP = 240;               // chiều cao vùng biểu đồ trên
+  const GAP   = 32;                // khoảng cách giữa 2 chart
+  const H_BOT = 220;               // chiều cao vùng biểu đồ dưới
+  const LEG   = 36;                // legend height
+  const TOTAL = H_TOP + GAP + H_BOT + LEG;
+  const chartW = W - PL - PR;
+  const colW   = n > 1 ? chartW / (n - 1) : chartW;
+  const xs     = allPoints.map((_, i) => PL + i * colW);
 
-  // Tọa độ X cho mỗi điểm
-  const xs = allPoints.map((_, i) => PAD + i * colW);
-
-  // ── Biểu đồ TRÊN: tổng xúc xắc (3-18) ──────────────────────
-  const sumMin = 3, sumMax = 18;
+  // ── Hàm tọa độ Y ──────────────────────────────────────────
   function sumY(v) {
-    return H_TOP - 20 - ((v - sumMin) / (sumMax - sumMin)) * (H_TOP - 40);
+    return PT + (H_TOP - PT - PB) * (1 - (v - 3) / 15);
+  }
+  const botBase = H_TOP + GAP;
+  function diceY(v) {
+    return botBase + PT + (H_BOT - PT - PB) * (1 - (v - 1) / 5);
   }
 
-  // Grid lines cho biểu đồ trên
-  const gridVals = [3, 6, 9, 12, 15, 18];
-  let topGridLines = "";
-  for (const v of gridVals) {
+  // ── Grid vàng mờ (giống game) ─────────────────────────────
+  // Grid dọc
+  let gridV = "";
+  for (let i = 0; i < n; i++) {
+    gridV += `<line x1="${xs[i]}" y1="${PT}" x2="${xs[i]}" y2="${H_TOP - PB}" stroke="rgba(180,140,40,0.25)" stroke-width="1"/>`;
+    gridV += `<line x1="${xs[i]}" y1="${botBase+PT}" x2="${xs[i]}" y2="${botBase+H_BOT-PB}" stroke="rgba(180,140,40,0.25)" stroke-width="1"/>`;
+  }
+
+  // Grid ngang trên (3,6,9,12,15,18)
+  let gridHTop = "", labelsTop = "";
+  for (const v of [3,6,9,12,15,18]) {
     const y = sumY(v);
-    topGridLines += `<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>`;
-    topGridLines += `<text x="${PAD - 8}" y="${y + 4}" fill="rgba(255,255,255,0.6)" font-size="10" text-anchor="end">${v}</text>`;
+    gridHTop += `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="rgba(180,140,40,0.30)" stroke-width="1"/>`;
+    labelsTop += `<text x="${PL-8}" y="${y+4}" fill="#C8A84B" font-size="12" text-anchor="end" font-family="Arial Black,Arial,sans-serif" font-weight="900">${v}</text>`;
   }
 
-  // Polyline tổng
-  const sumPts = allPoints.map((p, i) => `${xs[i]},${sumY(p.sum)}`).join(" ");
-  let topPath = `<polyline points="${sumPts}" fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round"/>`;
+  // Grid ngang dưới (1-6)
+  let gridHBot = "", labelsBot = "";
+  for (const v of [1,2,3,4,5,6]) {
+    const y = diceY(v);
+    gridHBot += `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="rgba(180,140,40,0.30)" stroke-width="1"/>`;
+    labelsBot += `<text x="${PL-8}" y="${y+4}" fill="#C8A84B" font-size="12" text-anchor="end" font-family="Arial Black,Arial,sans-serif" font-weight="900">${v}</text>`;
+  }
 
-  // Dots tổng + labels
-  let topDots = "";
-  for (let i = 0; i < allPoints.length; i++) {
+  // ── Đường tổng (vàng) ─────────────────────────────────────
+  const sumPolyPts = allPoints.map((p,i) => `${xs[i]},${sumY(p.sum)}`).join(" ");
+  const sumLine = `<polyline points="${sumPolyPts}" fill="none" stroke="#FFD700" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  // Dots tổng: hình tròn lớn có viền đen + số bên trong (như game)
+  let sumDots = "";
+  for (let i = 0; i < n; i++) {
     const p = allPoints[i];
     const y = sumY(p.sum);
+    const isT = p.sum >= 11;
     const isFake = p.fake;
-    const fillColor = isFake ? "#FF6B35" : (p.sum >= 11 ? "#F5C518" : "#C0C0C0");
-    const strokeColor = isFake ? "#FF3300" : "#333";
-    topDots += `<circle cx="${xs[i]}" cy="${y}" r="${isFake ? 7 : 6}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="${isFake ? 2 : 1.5}"/>`;
-    topDots += `<text x="${xs[i]}" y="${y - 10}" fill="${isFake ? "#FF6B35" : "#FFD700"}" font-size="${isFake ? 11 : 10}" text-anchor="middle" font-weight="${isFake ? 'bold' : 'normal'}">${p.sum}</text>`;
+    const r = isFake ? 18 : 16;
+    const fill = isFake ? "#FF5500" : (isT ? "#F5C518" : "#B0B0B0");
+    const textFill = isFake ? "#fff" : (isT ? "#1a0d00" : "#1a1a1a");
+    const strokeC = isFake ? "#FF2200" : "#1a0d00";
+    sumDots += `<circle cx="${xs[i]}" cy="${y}" r="${r}" fill="${fill}" stroke="${strokeC}" stroke-width="3"/>`;
+    sumDots += `<text x="${xs[i]}" y="${y+5}" fill="${textFill}" font-size="${isFake?13:12}" text-anchor="middle" font-family="Arial Black,Arial" font-weight="900">${p.sum}</text>`;
     if (isFake) {
-      topDots += `<text x="${xs[i]}" y="${y + 20}" fill="#FF6B35" font-size="9" text-anchor="middle" font-style="italic">DỰ</text>`;
+      sumDots += `<text x="${xs[i]}" y="${y+r+14}" fill="#FF5500" font-size="10" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">DỰ</text>`;
     }
   }
 
-  // ── Biểu đồ DƯỚI: từng xúc xắc (1-6) ───────────────────────
-  const diceMin = 1, diceMax = 6;
-  const botTop = H_TOP + 30;
-  function diceY(v) {
-    return botTop + H_BOT - 15 - ((v - diceMin) / (diceMax - diceMin)) * (H_BOT - 30);
-  }
-
-  // Grid lines dưới
-  let botGridLines = "";
-  for (let v = 1; v <= 6; v++) {
-    const y = diceY(v);
-    botGridLines += `<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
-    botGridLines += `<text x="${PAD - 8}" y="${y + 4}" fill="rgba(255,255,255,0.5)" font-size="10" text-anchor="end">${v}</text>`;
-  }
-
-  // 3 đường xúc xắc
-  const diceColors = ["#FF69B4", "#FF4444", "#66FF66"]; // pink, red, green (như game)
-  let botPaths = "", botDots = "";
+  // ── 3 đường xúc xắc (như game: hồng/đỏ/xanh lá) ──────────
+  const DC = ["#FF69B4","#FF3333","#33DD66"];
+  let diceLines = "", diceDots = "";
 
   for (let d = 0; d < 3; d++) {
-    const vals = d === 0 ? "d1" : d === 1 ? "d2" : "d3";
-    const pts = allPoints.map((p, i) => `${xs[i]},${diceY(p[vals])}`).join(" ");
-    botPaths += `<polyline points="${pts}" fill="none" stroke="${diceColors[d]}" stroke-width="2" stroke-linejoin="round" opacity="0.9"/>`;
-    for (let i = 0; i < allPoints.length; i++) {
+    const key = d === 0 ? "d1" : d === 1 ? "d2" : "d3";
+    const pts = allPoints.map((p,i) => `${xs[i]},${diceY(p[key])}`).join(" ");
+    diceLines += `<polyline points="${pts}" fill="none" stroke="${DC[d]}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    for (let i = 0; i < n; i++) {
       const p = allPoints[i];
-      const y = diceY(p[vals]);
+      const y = diceY(p[key]);
       const isFake = p.fake;
-      botDots += `<circle cx="${xs[i]}" cy="${y}" r="${isFake ? 6 : 5}" fill="${diceColors[d]}" stroke="${isFake ? "#FF3300" : "#1a1a1a"}" stroke-width="${isFake ? 2 : 1.5}" opacity="${isFake ? 1 : 0.95}"/>`;
+      const r = isFake ? 10 : 9;
+      // Outer glow ring
+      diceDots += `<circle cx="${xs[i]}" cy="${y}" r="${r+3}" fill="${DC[d]}" opacity="0.25"/>`;
+      diceDots += `<circle cx="${xs[i]}" cy="${y}" r="${r}" fill="${DC[d]}" stroke="#111" stroke-width="2.5"/>`;
     }
   }
 
-  // Vertical line dự đoán
-  const predX = xs[xs.length - 1];
-  const predLine = `
-    <line x1="${predX}" y1="0" x2="${predX}" y2="${H_TOP + H_BOT + 40}" stroke="rgba(255,100,0,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/>
-  `;
+  // ── Đường dọc dự đoán ─────────────────────────────────────
+  const predX = xs[n-1];
+  const predVLine = `<line x1="${predX}" y1="${PT}" x2="${predX}" y2="${botBase+H_BOT-PB}" stroke="#FF6600" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>`;
 
-  const totalH = H_TOP + H_BOT + 60;
+  // ── Phiên labels (trục X dưới cùng) ──────────────────────
+  let xLabels = "";
+  for (let i = 0; i < n; i++) {
+    const p = allPoints[i];
+    const lbl = String(p.phien).slice(-4);
+    xLabels += `<text x="${xs[i]}" y="${botBase+H_BOT-PB+18}" fill="${p.fake?"#FF6600":"#C8A84B"}" font-size="${p.fake?11:10}" text-anchor="middle" font-family="Arial,sans-serif" font-weight="${p.fake?700:400}">${lbl}</text>`;
+  }
 
-  const svgContent = `
-<svg viewBox="0 0 ${W} ${totalH}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:900px;display:block;margin:0 auto">
+  // ── Legend (3 nút XÍ NGẦU như game) ───────────────────────
+  const legY = botBase + H_BOT - PB + 36;
+  const btnW = 120, btnH = 26, btnR = 13;
+  const btn1X = W/2 - btnW - 20, btn2X = W/2 - btnW/2, btn3X = W/2 + btnW/2 + 20 - 20;
+
+  function diceBtn(x, label, c1, c2, tc) {
+    return `
+      <rect x="${x}" y="${legY}" width="${btnW}" height="${btnH}" rx="${btnR}" fill="url(#btn${label.slice(-1)})" stroke="${c1}" stroke-width="1.5"/>
+      <text x="${x+btnW/2}" y="${legY+17}" fill="${tc}" font-size="11" text-anchor="middle" font-family="Arial Black,Arial" font-weight="900" letter-spacing="1">${label}</text>`;
+  }
+
+  const svg = `<svg viewBox="0 0 ${W} ${TOTAL}" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block">
   <defs>
-    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2a1a00"/>
+    <linearGradient id="bgTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d2200"/>
+      <stop offset="100%" stop-color="#251500"/>
+    </linearGradient>
+    <linearGradient id="bgBot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a1800"/>
       <stop offset="100%" stop-color="#1a0d00"/>
     </linearGradient>
+    <linearGradient id="btn1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8B00CC"/><stop offset="100%" stop-color="#CC00FF"/>
+    </linearGradient>
+    <linearGradient id="btn2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#CC2200"/><stop offset="100%" stop-color="#FF4400"/>
+    </linearGradient>
+    <linearGradient id="btn3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#006633"/><stop offset="100%" stop-color="#00AA55"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   </defs>
-  <rect width="${W}" height="${totalH}" fill="url(#bgGrad)" rx="8"/>
-  ${predLine}
-  ${topGridLines}
-  ${topPath}
-  ${topDots}
-  <line x1="${PAD}" y1="${H_TOP + 15}" x2="${W - PAD}" y2="${H_TOP + 15}" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
-  ${botGridLines}
-  ${botPaths}
-  ${botDots}
-  <!-- Phiên labels bottom -->
-  ${allPoints.map((p, i) => `
-    <text x="${xs[i]}" y="${totalH - 5}" fill="${p.fake ? '#FF6B35' : 'rgba(255,255,255,0.5)'}" font-size="${p.fake ? 9 : 8}" text-anchor="middle" font-weight="${p.fake ? 'bold' : 'normal'}">${String(p.phien).slice(-4)}</text>
-  `).join("")}
-  <!-- Legend -->
-  <circle cx="${W - 180}" cy="${H_TOP + 8}" r="5" fill="#FF69B4"/>
-  <text x="${W - 172}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 1</text>
-  <circle cx="${W - 120}" cy="${H_TOP + 8}" r="5" fill="#FF4444"/>
-  <text x="${W - 112}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 2</text>
-  <circle cx="${W - 60}" cy="${H_TOP + 8}" r="5" fill="#66FF66"/>
-  <text x="${W - 52}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 3</text>
+
+  <!-- Background top chart -->
+  <rect x="0" y="0" width="${W}" height="${H_TOP}" fill="url(#bgTop)" rx="0"/>
+  <!-- Background bottom chart -->
+  <rect x="0" y="${botBase}" width="${W}" height="${H_BOT}" fill="url(#bgBot)" rx="0"/>
+
+  <!-- Grid -->
+  ${gridV}${gridHTop}${gridHBot}
+
+  <!-- Đường tổng -->
+  ${sumLine}
+  ${sumDots}
+
+  <!-- Đường xúc xắc -->
+  ${diceLines}
+  ${diceDots}
+
+  <!-- Labels -->
+  ${labelsTop}${labelsBot}
+  ${xLabels}
+
+  <!-- Prediction vertical line -->
+  ${predVLine}
+
+  <!-- Legend buttons -->
+  ${diceBtn(btn1X, "XÍ NGẦU 1", "#CC00FF", "#8B00CC", "#fff")}
+  ${diceBtn(btn2X, "XÍ NGẦU 2", "#FF4400", "#CC2200", "#fff")}
+  ${diceBtn(btn3X, "XÍ NGẦU 3", "#00AA55", "#006633", "#fff")}
 </svg>`;
 
-  return svgContent;
+  return svg;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -717,205 +756,185 @@ http.createServer(async (req, res) => {
   // ── /bieudo ───────────────────────────────────────────────────
   if (url.pathname === "/bieudo") {
     await syncHistory();
-
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-
-    if (!history.length) {
-      res.writeHead(503);
-      res.end("<html><body style='background:#1a0d00;color:#fff;font-family:sans-serif;padding:40px'><h2>Chưa có dữ liệu</h2></body></html>");
-      return;
-    }
 
     const pred     = predict(history);
     const fakeDice = generateFakeDiceForPrediction(pred, history);
     const svgChart = renderChartHTML(history, pred, fakeDice);
 
-    const lastLocked   = history[0];
-    const _phienDuDoanRaw = pendingSession
-      ? Number(pendingSession.phien)
-      : Number(lastLocked?.phien ?? 0) + 1;
-    const _phienHienTaiRaw = Number(lastLocked?.phien ?? 0);
-    const phienDuDoan = _phienDuDoanRaw > _phienHienTaiRaw
-      ? _phienDuDoanRaw
-      : _phienHienTaiRaw + 1;
+    const lastLocked = history[0] ?? null;
+    const _raw = pendingSession ? Number(pendingSession.phien) : Number(lastLocked?.phien ?? 0) + 1;
+    const _cur = Number(lastLocked?.phien ?? 0);
+    const phienDuDoan = _raw > _cur ? _raw : _cur + 1;
 
+    const diceStr = lastLocked?.dice
+      ? `${lastLocked.dice.d1}-${lastLocked.dice.d2}-${lastLocked.dice.d3}`
+      : "—";
+    const typeLabel = lastLocked?.type === "T" ? "Tài" : lastLocked?.type === "X" ? "Xỉu" : "—";
+    const predLabel = pred.next === "T" ? "TÀI" : pred.next === "X" ? "XỈU" : "?";
     const predColor = pred.next === "T" ? "#F5C518" : "#C0C0C0";
-    const predBg    = pred.next === "T" ? "linear-gradient(135deg,#7b5800,#c88000)" : "linear-gradient(135deg,#3a3a5c,#6060aa)";
 
     const html = `<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Lịch Sử Phiên - Tài Xỉu</title>
+<title>Lịch Sử Phiên</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@400;600;700;900&family=Roboto+Mono:wght@400;700&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: radial-gradient(ellipse at top, #2a1500 0%, #0d0800 60%);
-    min-height: 100vh;
-    font-family: 'Saira Condensed', sans-serif;
-    color: #fff;
-    padding: 16px;
-  }
-  .container {
-    max-width: 960px;
-    margin: 0 auto;
-    background: rgba(60,30,0,0.6);
-    border: 2px solid #8B6914;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 0 40px rgba(200,140,0,0.3);
-  }
-  h1 {
-    text-align: center;
-    font-size: 1.8rem;
-    font-weight: 900;
-    letter-spacing: 3px;
-    color: #FFD700;
-    text-shadow: 0 0 20px rgba(255,215,0,0.5);
-    margin-bottom: 10px;
-    text-transform: uppercase;
-  }
-  .latest {
-    text-align: center;
-    margin-bottom: 16px;
-    font-size: 1rem;
-    color: #FFD700;
-  }
-  .latest span { color: #fff; font-weight: 700; }
-  .chart-wrap {
-    background: rgba(20,10,0,0.8);
-    border: 1px solid #5a4200;
-    border-radius: 8px;
-    padding: 12px 4px;
-    margin-bottom: 16px;
-    overflow-x: auto;
-  }
-  .pred-box {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    justify-content: center;
-    margin-bottom: 16px;
-  }
-  .pred-card {
-    background: ${predBg};
-    border: 2px solid ${predColor};
-    border-radius: 10px;
-    padding: 14px 28px;
-    text-align: center;
-    min-width: 180px;
-    box-shadow: 0 0 20px rgba(255,215,0,0.2);
-  }
-  .pred-card .label { font-size: 0.8rem; color: rgba(255,255,255,0.7); margin-bottom: 4px; letter-spacing: 1px; }
-  .pred-card .value { font-size: 2rem; font-weight: 900; color: ${predColor}; text-shadow: 0 0 15px ${predColor}; }
-  .pred-card .sub   { font-size: 0.8rem; color: rgba(255,255,255,0.6); margin-top: 4px; }
-  .info-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-  .info-card {
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,215,0,0.2);
-    border-radius: 8px;
-    padding: 10px 14px;
-  }
-  .info-card .k { font-size: 0.7rem; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; }
-  .info-card .v { font-size: 1rem; font-weight: 700; color: #FFD700; margin-top: 2px; }
-  .fake-dice {
-    text-align: center;
-    background: rgba(255,100,0,0.1);
-    border: 1px dashed rgba(255,100,0,0.5);
-    border-radius: 8px;
-    padding: 10px;
-    margin-bottom: 12px;
-    font-size: 0.85rem;
-    color: rgba(255,150,50,0.9);
-  }
-  .api-links {
-    text-align: center;
-    margin-top: 10px;
-    font-size: 0.8rem;
-  }
-  .api-links a {
-    color: #8B6914;
-    margin: 0 8px;
-    text-decoration: none;
-  }
-  .api-links a:hover { color: #FFD700; }
-  .refresh-btn {
-    display: block;
-    margin: 0 auto 14px;
-    padding: 8px 24px;
-    background: linear-gradient(135deg,#7b5800,#c88000);
-    border: none;
-    border-radius: 6px;
-    color: #fff;
-    font-family: 'Saira Condensed',sans-serif;
-    font-size: 1rem;
-    font-weight: 700;
-    cursor: pointer;
-    letter-spacing: 1px;
-  }
-  .refresh-btn:hover { background: linear-gradient(135deg,#c88000,#FFD700); color: #000; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:radial-gradient(ellipse at 50% 0%,#4a2800 0%,#1a0900 55%,#0a0400 100%);
+  min-height:100vh;
+  font-family:"Arial Black",Arial,sans-serif;
+  color:#fff;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:0 0 32px;
+}
+/* ── Header ── */
+.header{
+  width:100%;max-width:1060px;
+  text-align:center;
+  padding:18px 12px 10px;
+}
+.header-title{
+  display:inline-flex;align-items:center;gap:10px;
+  font-size:1.9rem;font-weight:900;letter-spacing:4px;
+  color:#FFD700;
+  text-shadow:0 0 24px rgba(255,210,0,0.6),0 2px 0 #7a5000;
+  text-transform:uppercase;
+  margin-bottom:10px;
+}
+.header-title svg{width:32px;height:32px;flex-shrink:0}
+.header-sub{
+  font-size:1rem;font-weight:700;letter-spacing:1px;
+  color:#FFD700;
+}
+.header-sub span{color:#fff;font-size:1.05rem}
+/* ── Chart panel ── */
+.panel{
+  width:100%;max-width:1060px;
+  background:linear-gradient(180deg,#3d2200 0%,#1e1000 100%);
+  border:2.5px solid #8B6000;
+  border-radius:16px;
+  padding:14px 10px 6px;
+  margin:0 8px;
+  box-shadow:0 0 50px rgba(200,130,0,0.25),inset 0 1px 0 rgba(255,200,50,0.1);
+  overflow:hidden;
+}
+.chart-scroll{overflow-x:auto;overflow-y:hidden}
+/* ── Prediction box ── */
+.pred-wrap{
+  width:100%;max-width:1060px;
+  display:flex;gap:12px;flex-wrap:wrap;
+  justify-content:center;
+  padding:14px 8px 0;
+}
+.pred-main{
+  background:linear-gradient(135deg,#5a3800,#9a6200);
+  border:2px solid #FFD700;
+  border-radius:14px;
+  padding:16px 32px;
+  text-align:center;
+  box-shadow:0 0 28px rgba(255,215,0,0.2);
+  min-width:200px;
+}
+.pred-main .lbl{font-size:.75rem;letter-spacing:2px;color:rgba(255,255,255,.65);margin-bottom:4px}
+.pred-main .phien{font-size:.9rem;color:#FFD700;font-weight:700;margin-bottom:6px}
+.pred-main .val{font-size:2.4rem;font-weight:900;letter-spacing:2px;text-shadow:0 0 20px currentColor}
+.pred-main .conf{font-size:.8rem;color:rgba(255,255,255,.6);margin-top:6px}
+.pred-reason{
+  background:rgba(255,255,255,.04);
+  border:1.5px solid rgba(255,215,0,.18);
+  border-radius:14px;
+  padding:14px 24px;
+  text-align:center;
+  min-width:160px;
+  display:flex;flex-direction:column;justify-content:center;
+}
+.pred-reason .lbl{font-size:.7rem;letter-spacing:2px;color:rgba(255,255,255,.5);margin-bottom:6px}
+.pred-reason .val{font-size:.95rem;font-weight:700;color:#ccc;line-height:1.4}
+/* ── Auto refresh ── */
+.bottom{
+  width:100%;max-width:1060px;
+  display:flex;justify-content:center;align-items:center;gap:16px;
+  padding:14px 8px 0;
+  flex-wrap:wrap;
+}
+.btn-refresh{
+  padding:9px 28px;
+  background:linear-gradient(135deg,#7b5800,#c88000);
+  border:none;border-radius:20px;
+  color:#fff;font-family:"Arial Black",Arial;font-size:.9rem;font-weight:900;
+  cursor:pointer;letter-spacing:1px;
+  box-shadow:0 4px 12px rgba(200,130,0,0.3);
+}
+.btn-refresh:hover{background:linear-gradient(135deg,#c88000,#FFD700);color:#000}
+.links a{color:#8B6914;font-size:.8rem;margin:0 8px;text-decoration:none}
+.links a:hover{color:#FFD700}
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>🎲 Lịch Sử Phiên</h1>
-  <div class="latest">
+<div class="header">
+  <div class="header-title">
+    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="2" width="28" height="28" rx="6" fill="#FFD700" stroke="#7a5000" stroke-width="2"/>
+      <circle cx="9" cy="9" r="2.5" fill="#1a0900"/>
+      <circle cx="23" cy="9" r="2.5" fill="#1a0900"/>
+      <circle cx="16" cy="16" r="2.5" fill="#1a0900"/>
+      <circle cx="9" cy="23" r="2.5" fill="#1a0900"/>
+      <circle cx="23" cy="23" r="2.5" fill="#1a0900"/>
+    </svg>
+    LỊCH SỬ PHIÊN
+  </div>
+  <div class="header-sub">
     Phiên gần nhất: <span>#${lastLocked?.phien ?? "—"}</span>
-    &nbsp;|&nbsp;
-    <span style="color:${lastLocked?.type === "T" ? "#F5C518" : "#C0C0C0"}">${lastLocked?.type === "T" ? "Tài" : "Xỉu"}
-    ${lastLocked?.dice ? `(${lastLocked.dice.d1}-${lastLocked.dice.d2}-${lastLocked.dice.d3})` : ""}</span>
-  </div>
-
-  <div class="chart-wrap">
-    ${svgChart}
-  </div>
-
-  <div class="pred-box">
-    <div class="pred-card">
-      <div class="label">DỰ ĐOÁN PHIÊN</div>
-      <div class="value" style="font-size:1rem;margin-bottom:4px">#${phienDuDoan}</div>
-      <div class="value">${pred.next === "T" ? "🟡 TÀI" : "⚪ XỈU"}</div>
-      <div class="sub">Tin cậy: ${pred.conf}%</div>
-    </div>
-    <div class="pred-card" style="background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.2)">
-      <div class="label">LÝ DO</div>
-      <div class="value" style="font-size:1rem;color:#aaa;margin-top:8px">${pred.reason}</div>
-    </div>
-  </div>
-
-  <div class="fake-dice">
-    🎲 Xúc xắc dự đoán phiên ${phienDuDoan}:
-    <strong>${fakeDice.d1} - ${fakeDice.d2} - ${fakeDice.d3}</strong>
-    = Tổng <strong>${fakeDice.sum}</strong>
-    → <strong>${fakeDice.sum >= 11 ? "TÀI" : "XỈU"}</strong>
-    (điểm cam trên biểu đồ)
-  </div>
-
-  <div class="info-grid">
-    ${pred.detail.sumChart ? `<div class="info-card"><div class="k">Biểu đồ Tổng</div><div class="v">${pred.detail.sumChart.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.sumChart.conf}%)</div></div>` : ""}
-    ${pred.detail.diceChart ? `<div class="info-card"><div class="k">Biểu đồ Xúc Xắc</div><div class="v">${pred.detail.diceChart.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.diceChart.conf}%)</div></div>` : ""}
-    ${pred.detail.pattern ? `<div class="info-card"><div class="k">Pattern Cầu</div><div class="v">${pred.detail.pattern.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.pattern.conf}%)</div></div>` : ""}
-    ${pred.detail.betting ? `<div class="info-card"><div class="k">Tỷ Lệ Cược</div><div class="v">${pred.detail.betting.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.betting.conf}%)</div></div>` : ""}
-    <div class="info-card"><div class="k">Tổng Phiên</div><div class="v">${history.length}</div></div>
-    <div class="info-card"><div class="k">Bot ID</div><div class="v" style="font-size:0.8rem">${BOT_ID}</div></div>
-  </div>
-
-  <button class="refresh-btn" onclick="location.reload()">🔄 Làm Mới</button>
-
-  <div class="api-links">
-    <a href="/predict">/ JSON</a>
-    <a href="/history">/ History 50</a>
-    <a href="/bieudo">/ Biểu Đồ</a>
-    <a href="/debug">/ Debug</a>
+    &nbsp;&nbsp;
+    <span style="color:${lastLocked?.type==="T"?"#F5C518":"#B0B0B0"}">${typeLabel} (${diceStr})</span>
   </div>
 </div>
+
+<div class="panel">
+  <div class="chart-scroll">${svgChart || "<p style='color:#888;padding:40px;text-align:center'>Đang chờ dữ liệu...</p>"}</div>
+</div>
+
+<div class="pred-wrap">
+  <div class="pred-main">
+    <div class="lbl">DỰ ĐOÁN PHIÊN</div>
+    <div class="phien">#${phienDuDoan}</div>
+    <div class="val" style="color:${predColor}">${predLabel}</div>
+    <div class="conf">Độ tin cậy: ${pred.conf}%</div>
+  </div>
+  <div class="pred-reason">
+    <div class="lbl">PHÂN TÍCH</div>
+    <div class="val">${pred.reason}</div>
+  </div>
+</div>
+
+<div class="bottom">
+  <button class="btn-refresh" onclick="location.reload()">🔄 Làm mới</button>
+  <div class="links">
+    <a href="/">JSON</a>
+    <a href="/history">History</a>
+    <a href="/bieudo">Biểu đồ</a>
+    <a href="/debug">Debug</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  let currentPhien = ${lastLocked?.phien ?? 0};
+  function check(){
+    fetch("/predict").then(r=>r.json()).then(d=>{
+      if(d.phien_hien_tai && d.phien_hien_tai !== currentPhien){
+        location.reload();
+      }
+    }).catch(()=>{});
+  }
+  setInterval(check, 3000);
+})();
+</script>
 </body>
 </html>`;
 
