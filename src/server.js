@@ -56,14 +56,17 @@ function parseBody(body) {
   if (cmd === 1003) {
     const d1 = entry.d1 ?? null, d2 = entry.d2 ?? null, d3 = entry.d3 ?? null;
     if (d1 === null || d2 === null || d3 === null) return null;
-    const dice = { d1: Number(d1), d2: Number(d2), d3: Number(d3), sum: Number(d1)+Number(d2)+Number(d3) };
+    const dice = {
+      d1: Number(d1), d2: Number(d2), d3: Number(d3),
+      sum: Number(d1) + Number(d2) + Number(d3)
+    };
     return { kind: "result", dice };
   }
   return null;
 }
 
 // ══════════════════════════════════════════════════════════════
-// KẾT QUẢ SUY LUẬN
+// SUY LUẬN KẾT QUẢ
 // ══════════════════════════════════════════════════════════════
 function inferType(ratio, prevType, dice) {
   if (dice && dice.sum != null) return dice.sum >= 11 ? "T" : "X";
@@ -90,7 +93,6 @@ function ingest(parsed) {
       pendingSession.type = inferType(pendingSession.ratio, prevType, pendingSession.dice);
       history.unshift(pendingSession);
       if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
-      if (history.length >= 2) recordActual(history[0].type);
       lastDice = null;
     }
     pendingSession = { phien: sid, sTB, sTU, bTB, bTU, total, ratio, dice: null };
@@ -107,635 +109,6 @@ function ingest(parsed) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// TRỌNG LƯỢNG TỰ HIỆU CHỈNH
-// ══════════════════════════════════════════════════════════════
-const ALGOS = [
-  "pattern","markov10","markov9","markov8","markov7","markov6",
-  "markov5","markov4","markov3","markov2","markov1",
-  "freq","luong","streak5","entropy",
-  "chuky","autocorr","momentum","bayesian",
-  "ngram4","reversal","chiSq","trendFollow",
-  "streakLen","ratio","ratioMa","contrarian",
-  "cau11","cau22","cau33","cauZigZag","cauBreak",
-  "cauGap","cauBlock","cauMirror","cauAccel",
-  "parity","sumTrend","highLow","altBlock"
-];
-const acc = {};
-for (const n of ALGOS) acc[n] = { c: 20, t: 40 };
-
-function updateAcc(name, pred, actual) {
-  if (!acc[name]) return;
-  acc[name].t++;
-  if (pred === actual) acc[name].c++;
-  if (acc[name].t > 80) { acc[name].c *= 80 / acc[name].t; acc[name].t = 80; }
-}
-function getWeight(name) {
-  const a = acc[name];
-  if (!a || a.t < 8) return 1.0;
-  const r = a.c / a.t;
-  return Math.max(0, (r - 0.38) / 0.12);
-}
-
-let lastPreds = {};
-function recordActual(actual) {
-  for (const [name, pred] of Object.entries(lastPreds)) updateAcc(name, pred, actual);
-  lastPreds = {};
-}
-
-// ══════════════════════════════════════════════════════════════
-// PHÁT HIỆN CẦU (mở rộng)
-// ══════════════════════════════════════════════════════════════
-function detectPattern(seq) {
-  if (seq.length < 4) return null;
-  const s = seq.join("");
-
-  // ── Bệt dài ──────────────────────────────────────────────
-  const bm = s.match(/^(T{3,}|X{3,})/);
-  if (bm) {
-    const len  = bm[0].length;
-    const same = bm[0][0];
-    const next = len >= 7 ? (same === "T" ? "X" : "T") : same;
-    const conf = len >= 7 ? 0.70 : Math.min(0.54 + len * 0.03, 0.80);
-    return { name: `Bệt ${same === "T" ? "Tài" : "Xỉu"}(${len})`, next, conf };
-  }
-
-  // ── Cầu 1-1 ──────────────────────────────────────────────
-  let alt = 0;
-  for (let i = 0; i < Math.min(seq.length, 14); i++) {
-    if (i === 0 || seq[i] !== seq[i-1]) alt++;
-    else break;
-  }
-  if (alt >= 8) return { name: "Cầu 1-1 siêu dài", next: seq[0] === "T" ? "X" : "T", conf: 0.78 };
-  if (alt >= 6) return { name: "Cầu 1-1 dài",      next: seq[0] === "T" ? "X" : "T", conf: 0.73 };
-  if (alt >= 4) return { name: "Cầu 1-1",           next: seq[0] === "T" ? "X" : "T", conf: 0.64 };
-
-  // ── Cầu 2-2 ──────────────────────────────────────────────
-  if (s.length >= 8 && s[0]===s[1] && s[2]===s[3] && s[0]!==s[2] && s[4]===s[5] && s[0]===s[4])
-    return { name: "Cầu 2-2", next: s[0], conf: 0.68 };
-  if (s.length >= 6 && s[0]!==s[1] && s[1]===s[2] && s[3]===s[4] && s[1]!==s[3])
-    return { name: "Cầu 2-2 giữa", next: s[0]==="T"?"X":"T", conf: 0.63 };
-
-  // ── Cầu 3-3 ──────────────────────────────────────────────
-  if (s.length >= 6 && s[0]===s[1] && s[1]===s[2] && s[3]===s[4] && s[4]===s[5] && s[0]!==s[3])
-    return { name: "Cầu 3-3", next: s[0], conf: 0.65 };
-
-  // ── Cầu 4-4 ──────────────────────────────────────────────
-  if (s.length >= 8 && s.slice(0,4).split("").every(c=>c===s[0]) &&
-      s.slice(4,8).split("").every(c=>c===s[4]) && s[0]!==s[4])
-    return { name: "Cầu 4-4", next: s[0], conf: 0.66 };
-
-  // ── Cầu 5-5 ──────────────────────────────────────────────
-  if (s.length >= 10 && s.slice(0,5).split("").every(c=>c===s[0]) &&
-      s.slice(5,10).split("").every(c=>c===s[5]) && s[0]!==s[5])
-    return { name: "Cầu 5-5", next: s[0], conf: 0.67 };
-
-  // ── Cầu 2-1 / 1-2 ────────────────────────────────────────
-  if (s.length >= 6 && s[0]===s[1] && s[2]!==s[1] && s[3]===s[4] && s[5]!==s[4] && s[0]===s[3])
-    return { name: "Cầu 2-1", next: s[0], conf: 0.62 };
-  if (s.length >= 6 && s[0]!==s[1] && s[1]===s[2] && s[3]!==s[4] && s[4]===s[5])
-    return { name: "Cầu 1-2", next: s[0], conf: 0.61 };
-
-  // ── Cầu 3-1 / 1-3 ────────────────────────────────────────
-  if (s.length >= 8 && s[0]===s[1] && s[1]===s[2] && s[3]!==s[0] && s[4]===s[5] && s[5]===s[6] && s[4]!==s[3])
-    return { name: "Cầu 3-1 lặp", next: s[0], conf: 0.64 };
-  if (s.length >= 8 && s[0]!==s[1] && s[1]===s[2] && s[2]===s[3] && s[4]!==s[0])
-    return { name: "Cầu 1-3", next: s[0], conf: 0.62 };
-
-  // ── Cầu Zigzag kép: TTXX hoặc XXTT ──────────────────────
-  if (s.length >= 8 && s.slice(0,2).split("").every(c=>c==="T") &&
-      s.slice(2,4).split("").every(c=>c==="X") &&
-      s.slice(4,6).split("").every(c=>c==="T") &&
-      s.slice(6,8).split("").every(c=>c==="X"))
-    return { name: "Zigzag TTXX", next: "T", conf: 0.66 };
-  if (s.length >= 8 && s.slice(0,2).split("").every(c=>c==="X") &&
-      s.slice(2,4).split("").every(c=>c==="T") &&
-      s.slice(4,6).split("").every(c=>c==="X") &&
-      s.slice(6,8).split("").every(c=>c==="T"))
-    return { name: "Zigzag XXTT", next: "X", conf: 0.66 };
-
-  // ── Cầu gương / đối xứng ─────────────────────────────────
-  if (s.length >= 5 && s[0]===s[4] && s[1]===s[3] && s[1]!==s[0])
-    return { name: "Cầu Gương 5", next: s[1]==="T"?"X":"T", conf: 0.60 };
-  if (s.length >= 6 && s[0]===s[5] && s[1]===s[4] && s[2]===s[3])
-    return { name: "Cầu Gương 6", next: s[0]==="T"?"X":"T", conf: 0.61 };
-
-  // ── Chu kỳ p = 2..6 ──────────────────────────────────────
-  for (const p of [2,3,4,5,6]) {
-    if (s.length >= p*3) {
-      const c = s.slice(0,p);
-      if (s.slice(p,p*2)===c && s.slice(p*2,p*3)===c)
-        return { name: `Chu Kỳ ${p}`, next: c[0], conf: 0.65+p*0.01 };
-    }
-  }
-
-  // ── Cầu tăng dần T (T xuất hiện ngày càng nhiều) ─────────
-  if (s.length >= 9) {
-    const w1 = s.slice(0,3).split("").filter(c=>c==="T").length;
-    const w2 = s.slice(3,6).split("").filter(c=>c==="T").length;
-    const w3 = s.slice(6,9).split("").filter(c=>c==="T").length;
-    if (w1 > w2 && w2 > w3) return { name: "Cầu T giảm", next: "X", conf: 0.60 };
-    if (w1 < w2 && w2 < w3) return { name: "Cầu T tăng", next: "T", conf: 0.60 };
-  }
-
-  // ── Cầu Block ngắt: 3T + 1X + 3T ─────────────────────────
-  if (s.length >= 7 && s.slice(0,3)==="TTT" && s[3]==="X" && s.slice(4,7)==="TTT")
-    return { name: "Block T-break-T", next: "T", conf: 0.64 };
-  if (s.length >= 7 && s.slice(0,3)==="XXX" && s[3]==="T" && s.slice(4,7)==="XXX")
-    return { name: "Block X-break-X", next: "X", conf: 0.64 };
-
-  // ── Cầu N+1 bệt (tăng độ dài): T, TT, TTT... ─────────────
-  if (s.length >= 6) {
-    if (s[0]==="T" && s.slice(1,3)==="TT" && s.slice(3,6)==="TTT")
-      return { name: "Cầu Leo thang T", next: "T", conf: 0.63 };
-    if (s[0]==="X" && s.slice(1,3)==="XX" && s.slice(3,6)==="XXX")
-      return { name: "Cầu Leo thang X", next: "X", conf: 0.63 };
-  }
-
-  return null;
-}
-
-// ══════════════════════════════════════════════════════════════
-// MARKOV bậc N (tổng quát)
-// ══════════════════════════════════════════════════════════════
-function algoMarkovN(seq, n, minSamples) {
-  if (seq.length < n + minSamples) return null;
-  const t = {};
-  for (let i = 0; i < seq.length - n; i++) {
-    // key = seq[i+n-1]...seq[i+1] (trạng thái hiện tại, mới nhất trước)
-    const k = seq.slice(i+1, i+n+1).reverse().join("");
-    if (!t[k]) t[k] = { T: 0, X: 0 };
-    t[k][seq[i]]++;
-  }
-  const k = seq.slice(0, n).join("");
-  const row = t[k];
-  if (!row) return null;
-  const tot = row.T + row.X;
-  if (tot < minSamples) return null;
-  if (row.T > row.X) return { next: "T", conf: 0.50 + (row.T/tot - 0.50) * Math.min(0.60 + n*0.02, 0.80) };
-  if (row.X > row.T) return { next: "X", conf: 0.50 + (row.X/tot - 0.50) * Math.min(0.60 + n*0.02, 0.80) };
-  return null;
-}
-
-// ══════════════════════════════════════════════════════════════
-// CÁC THUẬT TOÁN CŨ (giữ nguyên)
-// ══════════════════════════════════════════════════════════════
-function algoFreq(seq) {
-  const n20=Math.min(seq.length,20), n50=Math.min(seq.length,50);
-  const rT=seq.slice(0,n20).filter(x=>x==="T").length/n20*0.6
-           +seq.slice(0,n50).filter(x=>x==="T").length/n50*0.4;
-  const rX=1-rT;
-  if (rT>0.60) return { next:"X", conf:0.50+(rT-0.50)*0.60 };
-  if (rX>0.60) return { next:"T", conf:0.50+(rX-0.50)*0.60 };
-  return null;
-}
-function algoLuong(seq) {
-  if (seq.length<8) return null;
-  const w=seq.slice(0,8); let tr=0;
-  for (let i=1;i<w.length;i++) if (w[i]!==w[i-1]) tr++;
-  if (tr<=1) return { next:w[0], conf:0.64 };
-  if (tr>=7) return { next:w[0]==="T"?"X":"T", conf:0.64 };
-  return null;
-}
-function algoStreak5(seq) {
-  if (seq.length<5) return null;
-  const f=seq[0];
-  if (seq.slice(0,5).every(x=>x===f)) return { next:f==="T"?"X":"T", conf:0.67 };
-  return null;
-}
-function algoEntropy(seq) {
-  const n=Math.min(seq.length,20); const sub=seq.slice(0,n);
-  let tr=0; for (let i=1;i<sub.length;i++) if (sub[i]!==sub[i-1]) tr++;
-  const e=tr/(n-1);
-  if (e>0.38&&e<0.62) return null;
-  if (e<=0.38) return { next:sub[0], conf:0.61 };
-  return { next:sub[0]==="T"?"X":"T", conf:0.59 };
-}
-function algoChuKy(seq) {
-  if (seq.length<12) return null;
-  for (let p=2;p<=6;p++) {
-    let match=0, total=0;
-    for (let i=0;i<Math.min(seq.length-p,20);i++) {
-      if (seq[i+p]!==undefined) { total++; if (seq[i]===seq[i+p]) match++; }
-    }
-    if (total>=6 && match/total>=0.75)
-      return { next:seq[p-1]??seq[0], conf:0.56+(match/total-0.75)*0.5 };
-  }
-  return null;
-}
-function algoAutoCorr(seq) {
-  if (seq.length<20) return null;
-  const n=Math.min(seq.length,40);
-  const v=seq.slice(0,n).map(x=>x==="T"?1:0);
-  const mean=v.reduce((a,b)=>a+b,0)/n;
-  let ac1=0, denom=0;
-  for (let i=0;i<n;i++) denom+=(v[i]-mean)**2;
-  for (let i=1;i<n;i++) ac1+=(v[i]-mean)*(v[i-1]-mean);
-  ac1/=denom;
-  if (ac1>0.15)  return { next:seq[0],               conf:0.54+Math.min(ac1*0.4,0.10) };
-  if (ac1<-0.15) return { next:seq[0]==="T"?"X":"T", conf:0.54+Math.min(-ac1*0.4,0.10) };
-  return null;
-}
-function algoMomentum(seq) {
-  if (seq.length<30) return null;
-  const s=seq.slice(0,5).filter(x=>x==="T").length/5;
-  const l=seq.slice(0,20).filter(x=>x==="T").length/20;
-  const d=s-l;
-  if (d>0.25)  return { next:"T", conf:0.55+Math.min(d*0.3,0.08) };
-  if (d<-0.25) return { next:"X", conf:0.55+Math.min(-d*0.3,0.08) };
-  return null;
-}
-function algoBayesian(seq) {
-  if (seq.length<15) return null;
-  let logOdds=0;
-  for (const w of [3,5,8,13]) {
-    const sub=seq.slice(0,Math.min(w,seq.length));
-    const pT=(sub.filter(x=>x==="T").length+1)/(sub.length+2);
-    logOdds+=Math.log(pT/(1-pT))/4;
-  }
-  const pT=1/(1+Math.exp(-logOdds));
-  if (pT>0.58) return { next:"T", conf:0.50+(pT-0.50)*0.8 };
-  if (pT<0.42) return { next:"X", conf:0.50+(0.50-pT)*0.8 };
-  return null;
-}
-function algoNgram4(seq) {
-  if (seq.length<25) return null;
-  const t={};
-  for (let i=0;i<seq.length-4;i++) {
-    const k=seq[i+4]+seq[i+3]+seq[i+2]+seq[i+1];
-    if (!t[k]) t[k]={T:0,X:0};
-    t[k][seq[i]]++;
-  }
-  const k=seq[3]+seq[2]+seq[1]+seq[0]; const row=t[k]; if (!row) return null;
-  const tot=row.T+row.X; if (tot<4) return null;
-  if (row.T>row.X) return { next:"T", conf:0.50+(row.T/tot-0.50)*0.72 };
-  if (row.X>row.T) return { next:"X", conf:0.50+(row.X/tot-0.50)*0.72 };
-  return null;
-}
-function algoReversal(seq) {
-  if (seq.length<20) return null;
-  let sLen=1; while (sLen<seq.length && seq[sLen]===seq[0]) sLen++;
-  if (sLen<2) return null;
-  let rev=0, samp=0;
-  for (let i=sLen;i<seq.length-sLen;i++) {
-    if (seq.slice(i,i+sLen).every(x=>x===seq[i])) {
-      samp++; if (seq[i-1]!==seq[i]) rev++; i+=sLen-1;
-    }
-  }
-  if (samp<3) return null;
-  const pr=rev/samp;
-  if (pr>0.65) return { next:seq[0]==="T"?"X":"T", conf:0.52+pr*0.10 };
-  if (pr<0.35) return { next:seq[0],               conf:0.52+(1-pr)*0.10 };
-  return null;
-}
-function algoChiSq(seq) {
-  if (seq.length<30) return null;
-  const obs={TT:0,TX:0,XT:0,XX:0};
-  for (let i=0;i<seq.length-1;i++) { const k=seq[i+1]+seq[i]; if (obs[k]!==undefined) obs[k]++; }
-  const n=Object.values(obs).reduce((a,b)=>a+b,0);
-  const exp=n/4;
-  const chi2=Object.values(obs).reduce((s,o)=>s+(o-exp)**2/exp,0);
-  if (chi2<3.84) return null;
-  const pTT=obs.TT/(obs.TT+obs.TX+0.001);
-  const pXX=obs.XX/(obs.XX+obs.XT+0.001);
-  if (seq[0]==="T"&&pTT>0.60) return { next:"T", conf:0.52+pTT*0.10 };
-  if (seq[0]==="T"&&pTT<0.40) return { next:"X", conf:0.52+(1-pTT)*0.10 };
-  if (seq[0]==="X"&&pXX>0.60) return { next:"X", conf:0.52+pXX*0.10 };
-  if (seq[0]==="X"&&pXX<0.40) return { next:"T", conf:0.52+(1-pXX)*0.10 };
-  return null;
-}
-function algoTrendFollow(seq) {
-  if (seq.length<12) return null;
-  const v=seq.slice(0,20).map(x=>x==="T"?1:0);
-  const ema=(arr,a)=>arr.reduce((e,x,i)=>i===0?x:a*x+(1-a)*e,arr[0]);
-  const e5=ema(v.slice(0,5),0.4), e12=ema(v.slice(0,12),0.2);
-  if (e5>e12+0.08) return { next:"T", conf:0.55 };
-  if (e5<e12-0.08) return { next:"X", conf:0.55 };
-  return null;
-}
-function algoStreakLen(seq) {
-  if (seq.length<20) return null;
-  const streaks=[]; let cur=1;
-  for (let i=1;i<seq.length;i++) {
-    if (seq[i]===seq[i-1]) cur++;
-    else { streaks.push(cur); cur=1; }
-  }
-  streaks.push(cur);
-  if (streaks.length<4) return null;
-  const avgLen=streaks.reduce((a,b)=>a+b,0)/streaks.length;
-  let curLen=1; while (curLen<seq.length && seq[curLen]===seq[0]) curLen++;
-  if (curLen>=Math.ceil(avgLen*1.5)) return { next:seq[0]==="T"?"X":"T", conf:0.57 };
-  if (curLen===1 && curLen<avgLen*0.6) return { next:seq[0], conf:0.54 };
-  return null;
-}
-function algoRatio(hist) {
-  if (!hist.length) return null;
-  const r=hist[0].ratio;
-  if (r>0.62) return { next:"T", conf:0.50+(r-0.50)*0.55 };
-  if (r<0.38) return { next:"X", conf:0.50+(0.50-r)*0.55 };
-  return null;
-}
-function algoRatioMa(hist) {
-  if (hist.length<5) return null;
-  const ma=hist.slice(0,5).reduce((s,h)=>s+h.ratio,0)/5;
-  if (ma>0.60) return { next:"T", conf:0.52+(ma-0.50)*0.40 };
-  if (ma<0.40) return { next:"X", conf:0.52+(0.50-ma)*0.40 };
-  return null;
-}
-function algoContrarian(hist) {
-  if (hist.length<10) return null;
-  const avgTotal=hist.slice(1,11).reduce((s,h)=>s+(h.total||0),0)/10;
-  const cur=hist[0];
-  if ((cur.total||0)<avgTotal*0.5) return null;
-  const r=cur.ratio;
-  if (r>0.65) return { next:"T", conf:0.58+(r-0.65)*0.40 };
-  if (r<0.35) return { next:"X", conf:0.58+(0.35-r)*0.40 };
-  return null;
-}
-
-// ── Cầu 1-1 chuyên biệt ──────────────────────────────────────
-function algoCau11(seq) {
-  if (seq.length < 6) return null;
-  let alt = 0;
-  for (let i = 1; i < seq.length; i++) { if (seq[i] !== seq[i-1]) alt++; else break; }
-  if (alt >= 5) return { next: seq[0] === "T" ? "X" : "T", conf: 0.67 };
-  return null;
-}
-
-// ── Cầu 2-2 chuyên biệt ──────────────────────────────────────
-function algoCau22(seq) {
-  if (seq.length < 8) return null;
-  if (seq[0]===seq[1] && seq[2]===seq[3] && seq[0]!==seq[2] &&
-      seq[4]===seq[5] && seq[6]===seq[7] && seq[4]!==seq[6] &&
-      seq[0]===seq[4])
-    return { next: seq[0], conf: 0.66 };
-  return null;
-}
-
-// ── Cầu 3-3 chuyên biệt ──────────────────────────────────────
-function algoCau33(seq) {
-  if (seq.length < 12) return null;
-  if (seq.slice(0,3).every(x=>x===seq[0]) && seq.slice(3,6).every(x=>x!==seq[0]) &&
-      seq.slice(6,9).every(x=>x===seq[0]) && seq.slice(9,12).every(x=>x!==seq[0]))
-    return { next: seq[0], conf: 0.65 };
-  return null;
-}
-
-// ── Cầu Zigzag phát hiện ─────────────────────────────────────
-function algoCauZigZag(seq) {
-  if (seq.length < 10) return null;
-  // TXTXTXTXTX hoặc TXTXTXTXT
-  let zz = true;
-  for (let i = 1; i < Math.min(seq.length, 10); i++) {
-    if (seq[i] === seq[i-1]) { zz = false; break; }
-  }
-  if (zz) return { next: seq[0] === "T" ? "X" : "T", conf: 0.70 };
-  return null;
-}
-
-// ── Cầu Phá / Đảo chiều bệt ──────────────────────────────────
-function algoCauBreak(seq) {
-  if (seq.length < 6) return null;
-  let bLen = 1;
-  while (bLen < seq.length && seq[bLen] === seq[0]) bLen++;
-  if (bLen >= 4) {
-    // Bệt đủ dài → dự đoán phá
-    return { next: seq[0] === "T" ? "X" : "T", conf: 0.55 + Math.min(bLen * 0.02, 0.12) };
-  }
-  return null;
-}
-
-// ── Khoảng cách giữa 2 lần đảo chiều ────────────────────────
-function algoCauGap(seq) {
-  if (seq.length < 15) return null;
-  const gaps = [];
-  let g = 1;
-  for (let i = 1; i < seq.length; i++) {
-    if (seq[i] === seq[i-1]) g++;
-    else { gaps.push(g); g = 1; }
-  }
-  if (gaps.length < 4) return null;
-  const avg = gaps.slice(0,4).reduce((a,b)=>a+b,0)/4;
-  let cur = 1; while (cur < seq.length && seq[cur]===seq[0]) cur++;
-  if (cur >= Math.round(avg)) return { next: seq[0]==="T"?"X":"T", conf: 0.58 };
-  return null;
-}
-
-// ── Block: TTTXXX hoặc XXXTTT ────────────────────────────────
-function algoCauBlock(seq) {
-  if (seq.length < 6) return null;
-  const first = seq[0];
-  if (seq.slice(0,3).every(x=>x===first) && seq.slice(3,6).every(x=>x!==first))
-    return { next: first, conf: 0.61 };
-  return null;
-}
-
-// ── Gương đảo chiều ──────────────────────────────────────────
-function algoCauMirror(seq) {
-  if (seq.length < 7) return null;
-  // Dạng TXTTTXT (đối xứng qua giữa)
-  const mid = Math.floor(seq.length / 2);
-  const half = seq.slice(0, mid);
-  const rev  = seq.slice(1, mid+1).reverse();
-  let match = 0;
-  for (let i = 0; i < half.length; i++) if (half[i] === rev[i]) match++;
-  if (match / half.length >= 0.85)
-    return { next: seq[0]==="T"?"X":"T", conf: 0.59 };
-  return null;
-}
-
-// ── Tăng tốc Tài / Xỉu ───────────────────────────────────────
-function algoCauAccel(seq) {
-  if (seq.length < 12) return null;
-  const c1 = seq.slice(0,4).filter(x=>x==="T").length;
-  const c2 = seq.slice(4,8).filter(x=>x==="T").length;
-  const c3 = seq.slice(8,12).filter(x=>x==="T").length;
-  if (c1 > c2 && c2 > c3) return { next: "T", conf: 0.58 }; // đang tăng dần T
-  if (c1 < c2 && c2 < c3) return { next: "X", conf: 0.58 }; // đang giảm T
-  return null;
-}
-
-// ── Chẵn/lẻ luân phiên ───────────────────────────────────────
-function algoParity(hist) {
-  if (hist.length < 6) return null;
-  const parSeq = hist.slice(0,6).map(h => {
-    const sum = h.dice?.sum ?? null;
-    if (sum === null) return null;
-    return sum % 2 === 0 ? "C" : "L";
-  });
-  if (parSeq.some(x=>x===null)) return null;
-  // Xen kẽ C-L ≥ 4 lần
-  let alt = 1;
-  for (let i = 1; i < parSeq.length; i++) {
-    if (parSeq[i] !== parSeq[i-1]) alt++;
-    else break;
-  }
-  if (alt >= 4) {
-    // Dự đoán ngược chẵn lẻ → không ảnh hưởng T/X trực tiếp
-    // Dùng để tăng trọng lượng hiện tại
-    return { next: hist[0].type === "T" ? "X" : "T", conf: 0.57 };
-  }
-  return null;
-}
-
-// ── Xu hướng tổng xúc xắc ────────────────────────────────────
-function algoSumTrend(hist) {
-  if (hist.length < 10) return null;
-  const sums = hist.slice(0,10).map(h=>h.dice?.sum??null).filter(x=>x!==null);
-  if (sums.length < 8) return null;
-  const recent = sums.slice(0,4).reduce((a,b)=>a+b,0)/4;
-  const older  = sums.slice(4,8).reduce((a,b)=>a+b,0)/4;
-  if (recent - older > 1.5) return { next: "T", conf: 0.57 };
-  if (older - recent > 1.5) return { next: "X", conf: 0.57 };
-  return null;
-}
-
-// ── Cao/thấp xen kẽ ──────────────────────────────────────────
-function algoHighLow(hist) {
-  if (hist.length < 8) return null;
-  const sums = hist.slice(0,8).map(h=>h.dice?.sum??null);
-  if (sums.some(x=>x===null)) return null;
-  let hl = 0;
-  for (let i = 1; i < sums.length; i++) {
-    if ((sums[i-1] > 10 && sums[i] <= 10) || (sums[i-1] <= 10 && sums[i] > 10)) hl++;
-    else break;
-  }
-  if (hl >= 5) return { next: hist[0].type === "T" ? "X" : "T", conf: 0.62 };
-  return null;
-}
-
-// ── Khối xen kẽ 2-2-2 ────────────────────────────────────────
-function algoAltBlock(seq) {
-  if (seq.length < 12) return null;
-  if (seq[0]===seq[1] && seq[2]===seq[3] && seq[0]!==seq[2] &&
-      seq[4]===seq[5] && seq[4]===seq[0] && seq[6]===seq[7] && seq[6]===seq[2] &&
-      seq[8]===seq[9] && seq[8]===seq[0])
-    return { next: seq[0], conf: 0.64 };
-  return null;
-}
-
-// ══════════════════════════════════════════════════════════════
-// GIỚI HẠN: KHÔNG DỰ ĐOÁN 1 BÊN QUÁ 3 LẦN LIÊN TIẾP
-// ══════════════════════════════════════════════════════════════
-let consecutivePred = { side: null, count: 0 };
-
-function applyConsecutiveLimit(next, conf, seq) {
-  if (consecutivePred.side === next) {
-    if (consecutivePred.count >= 3) {
-      // Buộc đổi bên
-      const forced = next === "T" ? "X" : "T";
-      // Tính lại conf dựa trên dữ liệu gần nhất
-      const recentT = seq.slice(0,10).filter(x=>x==="T").length / Math.min(seq.length,10);
-      const forcedConf = forced === "T" ? (0.50 + recentT * 0.15) : (0.50 + (1-recentT) * 0.15);
-      return { next: forced, conf: Math.round(Math.min(Math.max(forcedConf, 0.50), 0.75) * 100) };
-    }
-  }
-  return null; // không cần override
-}
-
-// ══════════════════════════════════════════════════════════════
-// ENSEMBLE
-// ══════════════════════════════════════════════════════════════
-function predict(hist) {
-  if (hist.length < 3) return {
-    next: "?", conf: 0, cauType: "Chưa đủ dữ liệu",
-    votesT: 0, votesX: 0
-  };
-
-  const seq = hist.map(h => h.type);
-  const wSum = { T: 0, X: 0 };
-  const votes = [];
-
-  const add = (name, res, base) => {
-    if (!res) return;
-    lastPreds[name] = res.next;
-    const w = base * getWeight(name);
-    wSum[res.next] += res.conf * w;
-    votes.push({ algo: name, pred: res.next });
-  };
-
-  const pat = detectPattern(seq);
-  add("pattern",     pat,                                 5.0);
-  add("contrarian",  algoContrarian(hist),                4.0);
-  add("ratio",       algoRatio(hist),                     3.5);
-  add("ratioMa",     algoRatioMa(hist),                   2.5);
-
-  // Markov bậc cao (10 → 4: trọng lượng giảm dần)
-  add("markov10",    algoMarkovN(seq,10,3),               5.0);
-  add("markov9",     algoMarkovN(seq, 9,3),               4.8);
-  add("markov8",     algoMarkovN(seq, 8,3),               4.5);
-  add("markov7",     algoMarkovN(seq, 7,3),               4.2);
-  add("markov6",     algoMarkovN(seq, 6,3),               4.0);
-  add("markov5",     algoMarkovN(seq, 5,4),               3.8);
-  add("markov4",     algoMarkovN(seq, 4,4),               3.5);
-  add("markov3",     algoMarkovN(seq, 3,5),               3.5);
-  add("markov2",     algoMarkovN(seq, 2,6),               3.0);
-  add("markov1",     algoMarkovN(seq, 1,6),               2.5);
-
-  add("ngram4",      algoNgram4(seq),                     2.5);
-  add("bayesian",    algoBayesian(seq),                   2.0);
-  add("streak5",     algoStreak5(seq),                    2.0);
-  add("autocorr",    algoAutoCorr(seq),                   1.8);
-  add("chiSq",       algoChiSq(seq),                      1.8);
-  add("luong",       algoLuong(seq),                      1.5);
-  add("momentum",    algoMomentum(seq),                   1.5);
-  add("freq",        algoFreq(seq),                       1.5);
-  add("trendFollow", algoTrendFollow(seq),                1.2);
-  add("chuky",       algoChuKy(seq),                      1.2);
-  add("entropy",     algoEntropy(seq),                    1.0);
-  add("reversal",    algoReversal(seq),                   1.0);
-  add("streakLen",   algoStreakLen(seq),                  1.0);
-
-  // Cầu chuyên biệt
-  add("cau11",       algoCau11(seq),                      2.0);
-  add("cau22",       algoCau22(seq),                      1.8);
-  add("cau33",       algoCau33(seq),                      1.8);
-  add("cauZigZag",   algoCauZigZag(seq),                  2.2);
-  add("cauBreak",    algoCauBreak(seq),                   1.5);
-  add("cauGap",      algoCauGap(seq),                     1.3);
-  add("cauBlock",    algoCauBlock(seq),                   1.3);
-  add("cauMirror",   algoCauMirror(seq),                  1.0);
-  add("cauAccel",    algoCauAccel(seq),                   1.2);
-
-  // Phân tích dice
-  add("parity",      algoParity(hist),                    1.5);
-  add("sumTrend",    algoSumTrend(hist),                  1.5);
-  add("highLow",     algoHighLow(hist),                   1.3);
-  add("altBlock",    algoAltBlock(seq),                   1.2);
-
-  const tot = wSum.T + wSum.X;
-  let next = "T", conf = 0.50;
-  if (tot > 0) {
-    if (wSum.X > wSum.T) { next = "X"; conf = wSum.X / tot; }
-    else                 { next = "T"; conf = wSum.T / tot; }
-  }
-  conf = Math.min(Math.max(conf, 0.50), 0.90);
-
-  // ── Giới hạn không dự đoán 1 bên quá 3 lần ──────────────
-  const override = applyConsecutiveLimit(next, conf, seq);
-  if (override) {
-    next = override.next;
-    conf = override.conf / 100;
-    consecutivePred = { side: next, count: 1 };
-  } else {
-    if (consecutivePred.side === next) consecutivePred.count++;
-    else consecutivePred = { side: next, count: 1 };
-  }
-
-  const cauType = pat ? pat.name
-    : wSum.T > wSum.X ? "Nghiêng Tài"
-    : wSum.X > wSum.T ? "Nghiêng Xỉu"
-    : "Cân bằng";
-
-  return {
-    next,
-    conf:    Math.round(conf * 100),
-    cauType,
-    votesT:  votes.filter(v=>v.pred==="T").length,
-    votesX:  votes.filter(v=>v.pred==="X").length
-  };
-}
-
-// ══════════════════════════════════════════════════════════════
 // SYNC
 // ══════════════════════════════════════════════════════════════
 async function syncHistory() {
@@ -748,6 +121,473 @@ async function syncHistory() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// HỆ THỐNG DỰ ĐOÁN DỰA TRÊN BIỂU ĐỒ (Chart-Based Prediction)
+// Phân tích pattern từ đồ thị tổng xúc xắc và từng xúc xắc
+// ══════════════════════════════════════════════════════════════
+
+// ── Phân tích xu hướng tổng (đường vàng) ──────────────────────
+function analyzeSumChart(hist) {
+  const sums = hist.map(h => h.dice?.sum ?? null).filter(x => x !== null);
+  if (sums.length < 4) return null;
+
+  const recent4 = sums.slice(0, 4);
+  const older4  = sums.slice(4, 8);
+
+  // Xu hướng tăng/giảm liên tiếp
+  let trend = 0;
+  for (let i = 1; i < Math.min(sums.length, 6); i++) {
+    if (sums[i-1] > sums[i]) trend++;
+    else if (sums[i-1] < sums[i]) trend--;
+  }
+
+  // Tổng trung bình gần nhất
+  const avgRecent = recent4.reduce((a, b) => a + b, 0) / recent4.length;
+  const avgOlder  = older4.length ? older4.reduce((a, b) => a + b, 0) / older4.length : avgRecent;
+
+  // Phát hiện đỉnh/đáy local
+  const isPeak   = sums[0] > sums[1] && sums[0] > sums[2];
+  const isTrough = sums[0] < sums[1] && sums[0] < sums[2];
+
+  // Biên độ dao động (volatility)
+  const max4 = Math.max(...recent4);
+  const min4 = Math.min(...recent4);
+  const range = max4 - min4;
+
+  // Dự đoán dựa trên xu hướng tổng
+  let next = null, conf = 0.52, reason = "";
+
+  if (isPeak && sums[0] >= 14) {
+    // Vừa đạt đỉnh cao → khả năng giảm về Xỉu
+    next = "X"; conf = 0.60 + Math.min((sums[0] - 14) * 0.02, 0.10);
+    reason = `Đỉnh cao (${sums[0]}) → Xỉu`;
+  } else if (isTrough && sums[0] <= 7) {
+    // Vừa đạt đáy thấp → khả năng tăng về Tài
+    next = "T"; conf = 0.60 + Math.min((7 - sums[0]) * 0.02, 0.10);
+    reason = `Đáy thấp (${sums[0]}) → Tài`;
+  } else if (trend >= 3 && avgRecent > 11) {
+    // Xu hướng tăng mạnh đang hướng về Tài
+    next = "T"; conf = 0.57;
+    reason = "Xu hướng tổng tăng";
+  } else if (trend <= -3 && avgRecent < 11) {
+    // Xu hướng giảm mạnh
+    next = "X"; conf = 0.57;
+    reason = "Xu hướng tổng giảm";
+  } else if (range >= 8) {
+    // Biên độ rộng → phân tích mean reversion
+    const mid = (max4 + min4) / 2;
+    next = sums[0] > mid ? "X" : "T";
+    conf = 0.55;
+    reason = "Mean reversion";
+  } else if (avgRecent > avgOlder + 1.5) {
+    next = "T"; conf = 0.55;
+    reason = "Tổng trung bình tăng";
+  } else if (avgRecent < avgOlder - 1.5) {
+    next = "X"; conf = 0.55;
+    reason = "Tổng trung bình giảm";
+  }
+
+  return next ? { next, conf, reason } : null;
+}
+
+// ── Phân tích từng xúc xắc (đường màu) ───────────────────────
+function analyzeDiceChart(hist) {
+  const diceHist = hist.filter(h => h.dice).slice(0, 15);
+  if (diceHist.length < 5) return null;
+
+  const d1s = diceHist.map(h => h.dice.d1);
+  const d2s = diceHist.map(h => h.dice.d2);
+  const d3s = diceHist.map(h => h.dice.d3);
+
+  // Phân tích xu hướng từng xúc xắc (như 3 đường màu trong game)
+  function diceAvg(arr, n) {
+    return arr.slice(0, n).reduce((a, b) => a + b, 0) / n;
+  }
+
+  const avg1_3 = diceAvg(d1s, 3), avg1_6 = diceAvg(d1s, 6);
+  const avg2_3 = diceAvg(d2s, 3), avg2_6 = diceAvg(d2s, 6);
+  const avg3_3 = diceAvg(d3s, 3), avg3_6 = diceAvg(d3s, 6);
+
+  // Momentum của từng xúc xắc
+  const mom1 = avg1_3 - avg1_6;
+  const mom2 = avg2_3 - avg2_6;
+  const mom3 = avg3_3 - avg3_6;
+
+  const totalMom = mom1 + mom2 + mom3;
+
+  // Dự đoán tổng kỳ tiếp dựa trên momentum
+  const predictedAvgPerDice = 3.5 + totalMom * 0.3;
+  const predictedSum = predictedAvgPerDice * 3;
+
+  // Pattern xen kẽ trong từng xúc xắc
+  function isAlternating(arr, n) {
+    let alt = 0;
+    for (let i = 1; i < Math.min(arr.length, n); i++) {
+      if ((arr[i-1] > 3.5) !== (arr[i] > 3.5)) alt++;
+    }
+    return alt >= n - 2;
+  }
+
+  const alt1 = isAlternating(d1s, 5);
+  const alt2 = isAlternating(d2s, 5);
+  const alt3 = isAlternating(d3s, 5);
+  const altCount = [alt1, alt2, alt3].filter(Boolean).length;
+
+  let next = null, conf = 0.52, reason = "";
+
+  if (altCount >= 2) {
+    // Các xúc xắc đang xen kẽ → tiếp tục pattern ngược
+    const lastSum = diceHist[0].dice.sum;
+    next = lastSum >= 11 ? "X" : "T";
+    conf = 0.58 + altCount * 0.03;
+    reason = `${altCount} xúc xắc xen kẽ`;
+  } else if (Math.abs(totalMom) > 0.5) {
+    next = predictedSum >= 11 ? "T" : "X";
+    conf = 0.54 + Math.min(Math.abs(totalMom) * 0.04, 0.10);
+    reason = `Momentum xúc xắc (${totalMom > 0 ? "+" : ""}${totalMom.toFixed(1)})`;
+  }
+
+  return next ? { next, conf, reason } : null;
+}
+
+// ── Phân tích pattern cầu từ sequence ──────────────────────────
+function analyzePattern(hist) {
+  if (hist.length < 4) return null;
+  const seq = hist.map(h => h.type);
+  const s   = seq.join("");
+
+  // Cầu bệt
+  const betLen = (() => {
+    let l = 1;
+    while (l < seq.length && seq[l] === seq[0]) l++;
+    return l;
+  })();
+
+  if (betLen >= 5) {
+    return { next: seq[0] === "T" ? "X" : "T", conf: 0.65, reason: `Bệt ${betLen}, dự phá` };
+  }
+  if (betLen >= 3) {
+    return { next: seq[0], conf: 0.58, reason: `Bệt ${betLen}, tiếp tục` };
+  }
+
+  // Cầu 1-1
+  let alt = 1;
+  for (let i = 1; i < Math.min(seq.length, 12); i++) {
+    if (seq[i] !== seq[i-1]) alt++;
+    else break;
+  }
+  if (alt >= 6) return { next: seq[0] === "T" ? "X" : "T", conf: 0.72, reason: `Cầu 1-1 (${alt})` };
+  if (alt >= 4) return { next: seq[0] === "T" ? "X" : "T", conf: 0.63, reason: `Cầu 1-1 (${alt})` };
+
+  // Cầu 2-2
+  if (s.length >= 8 &&
+      s[0] === s[1] && s[2] === s[3] && s[0] !== s[2] &&
+      s[4] === s[5] && s[0] === s[4])
+    return { next: s[0], conf: 0.66, reason: "Cầu 2-2" };
+
+  // Cầu 3-3
+  if (s.length >= 6 &&
+      s[0] === s[1] && s[1] === s[2] &&
+      s[3] === s[4] && s[4] === s[5] && s[0] !== s[3])
+    return { next: s[0], conf: 0.64, reason: "Cầu 3-3" };
+
+  // Chu kỳ
+  for (const p of [2, 3, 4]) {
+    if (s.length >= p * 3) {
+      const c = s.slice(0, p);
+      if (s.slice(p, p*2) === c && s.slice(p*2, p*3) === c)
+        return { next: c[0], conf: 0.63, reason: `Chu kỳ ${p}` };
+    }
+  }
+
+  return null;
+}
+
+// ── Phân tích tỷ lệ cược (crowd wisdom) ─────────────────────────
+function analyzeBetting(hist) {
+  if (!hist.length) return null;
+  const h = hist[0];
+  const r = h.ratio ?? 0.5;
+
+  // Crowd thường sai khi lệch mạnh → contrarian
+  if (r > 0.68) return { next: "T", conf: 0.57, reason: `Crowd Tài ${Math.round(r*100)}%` };
+  if (r < 0.32) return { next: "X", conf: 0.57, reason: `Crowd Xỉu ${Math.round((1-r)*100)}%` };
+
+  // Crowd moderate → follow
+  if (r > 0.60) return { next: "T", conf: 0.53, reason: `Crowd nhẹ Tài` };
+  if (r < 0.40) return { next: "X", conf: 0.53, reason: `Crowd nhẹ Xỉu` };
+
+  return null;
+}
+
+// ── ENSEMBLE dự đoán tổng hợp ─────────────────────────────────
+function predict(hist) {
+  if (hist.length < 3) return {
+    next: "?", conf: 0, reason: "Chưa đủ dữ liệu",
+    detail: { sumChart: null, diceChart: null, pattern: null, betting: null }
+  };
+
+  const sumChartResult  = analyzeSumChart(hist);
+  const diceChartResult = analyzeDiceChart(hist);
+  const patternResult   = analyzePattern(hist);
+  const bettingResult   = analyzeBetting(hist);
+
+  // Trọng số
+  const sources = [
+    { w: 3.0, r: sumChartResult  },  // Biểu đồ tổng (quan trọng nhất)
+    { w: 2.5, r: diceChartResult },  // Biểu đồ từng xúc xắc
+    { w: 2.0, r: patternResult   },  // Pattern sequence
+    { w: 1.5, r: bettingResult   },  // Tỷ lệ cược
+  ];
+
+  const wSum = { T: 0, X: 0 };
+  for (const { w, r } of sources) {
+    if (!r) continue;
+    wSum[r.next] += r.conf * w;
+  }
+
+  const tot = wSum.T + wSum.X;
+  let next = "T", conf = 0.50;
+  if (tot > 0) {
+    if (wSum.X > wSum.T) { next = "X"; conf = wSum.X / tot; }
+    else                 { next = "T"; conf = wSum.T / tot; }
+  }
+  conf = Math.min(Math.max(conf, 0.50), 0.88);
+
+  const reason = patternResult?.reason
+    ?? sumChartResult?.reason
+    ?? diceChartResult?.reason
+    ?? bettingResult?.reason
+    ?? (next === "T" ? "Nghiêng Tài" : "Nghiêng Xỉu");
+
+  return {
+    next,
+    conf: Math.round(conf * 100),
+    reason,
+    detail: {
+      sumChart:  sumChartResult  ? { next: sumChartResult.next,  conf: Math.round(sumChartResult.conf * 100),  reason: sumChartResult.reason  } : null,
+      diceChart: diceChartResult ? { next: diceChartResult.next, conf: Math.round(diceChartResult.conf * 100), reason: diceChartResult.reason } : null,
+      pattern:   patternResult   ? { next: patternResult.next,   conf: Math.round(patternResult.conf * 100),   reason: patternResult.reason   } : null,
+      betting:   bettingResult   ? { next: bettingResult.next,   conf: Math.round(bettingResult.conf * 100),   reason: bettingResult.reason   } : null,
+    }
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// SINH DỮ LIỆU FAKE CHO PHIÊN DỰ ĐOÁN TIẾP THEO
+// Tạo xúc xắc "giả lập" để vẽ biểu đồ điểm tiếp theo
+// ══════════════════════════════════════════════════════════════
+function generateFakeDiceForPrediction(pred, hist) {
+  const histWithDice = hist.filter(h => h.dice).slice(0, 10);
+  if (!histWithDice.length) {
+    // Fallback random theo dự đoán
+    if (pred.next === "T") {
+      const sum = 11 + Math.floor(Math.random() * 7); // 11-17
+      const d1 = Math.ceil(sum / 3), d2 = Math.ceil((sum - d1) / 2), d3 = sum - d1 - d2;
+      return { d1: Math.min(d1, 6), d2: Math.min(d2, 6), d3: Math.max(d3, 1), sum };
+    } else {
+      const sum = 4 + Math.floor(Math.random() * 7); // 4-10
+      const d1 = Math.ceil(sum / 3), d2 = Math.ceil((sum - d1) / 2), d3 = sum - d1 - d2;
+      return { d1: Math.min(d1, 6), d2: Math.min(d2, 6), d3: Math.max(d3, 1), sum };
+    }
+  }
+
+  // Dựa vào xu hướng thực tế của từng xúc xắc
+  const recentD1 = histWithDice.slice(0, 4).map(h => h.dice.d1);
+  const recentD2 = histWithDice.slice(0, 4).map(h => h.dice.d2);
+  const recentD3 = histWithDice.slice(0, 4).map(h => h.dice.d3);
+
+  const avgD1 = recentD1.reduce((a, b) => a + b, 0) / recentD1.length;
+  const avgD2 = recentD2.reduce((a, b) => a + b, 0) / recentD2.length;
+  const avgD3 = recentD3.reduce((a, b) => a + b, 0) / recentD3.length;
+
+  // Xu hướng từng xúc xắc
+  const trendD1 = recentD1[0] - recentD1[recentD1.length - 1];
+  const trendD2 = recentD2[0] - recentD2[recentD2.length - 1];
+  const trendD3 = recentD3[0] - recentD3[recentD3.length - 1];
+
+  // Tạo giá trị dự đoán từng xúc xắc theo trend + noise nhỏ
+  const clamp = (v) => Math.min(6, Math.max(1, Math.round(v)));
+  let pd1 = clamp(avgD1 + trendD1 * 0.3 + (Math.random() - 0.5) * 1.5);
+  let pd2 = clamp(avgD2 + trendD2 * 0.3 + (Math.random() - 0.5) * 1.5);
+  let pd3 = clamp(avgD3 + trendD3 * 0.3 + (Math.random() - 0.5) * 1.5);
+
+  let psum = pd1 + pd2 + pd3;
+
+  // Điều chỉnh để khớp với dự đoán T/X
+  if (pred.next === "T" && psum < 11) {
+    const diff = 11 - psum;
+    pd1 = clamp(pd1 + Math.ceil(diff / 3));
+    pd2 = clamp(pd2 + Math.ceil(diff / 3));
+    pd3 = clamp(pd3 + Math.floor(diff / 3));
+    psum = pd1 + pd2 + pd3;
+    if (psum < 11) pd1 = Math.min(6, pd1 + (11 - psum));
+  } else if (pred.next === "X" && psum >= 11) {
+    const diff = psum - 10;
+    pd1 = clamp(pd1 - Math.ceil(diff / 3));
+    pd2 = clamp(pd2 - Math.ceil(diff / 3));
+    pd3 = clamp(pd3 - Math.floor(diff / 3));
+    psum = pd1 + pd2 + pd3;
+    if (psum >= 11) pd1 = Math.max(1, pd1 - (psum - 10));
+  }
+
+  return {
+    d1: pd1, d2: pd2, d3: pd3,
+    sum: pd1 + pd2 + pd3,
+    fake: true
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// HTML BIỂU ĐỒ (giống game thật)
+// ══════════════════════════════════════════════════════════════
+function renderChartHTML(hist, pred, fakeDice) {
+  // Lấy 20 phiên gần nhất + 1 phiên dự đoán
+  const displayHist = hist.filter(h => h.dice).slice(0, 19);
+  displayHist.reverse(); // cũ → mới (trái → phải)
+
+  // Thêm phiên dự đoán vào cuối
+  const predPhien = displayHist.length
+    ? String(Number(displayHist[displayHist.length - 1].phien) + 1)
+    : "???";
+
+  const allPoints = [
+    ...displayHist.map(h => ({
+      phien: h.phien,
+      sum: h.dice.sum,
+      d1: h.dice.d1,
+      d2: h.dice.d2,
+      d3: h.dice.d3,
+      type: h.type,
+      fake: false
+    })),
+    {
+      phien: predPhien,
+      sum: fakeDice.sum,
+      d1: fakeDice.d1,
+      d2: fakeDice.d2,
+      d3: fakeDice.d3,
+      type: pred.next,
+      fake: true
+    }
+  ];
+
+  const n = allPoints.length;
+  if (n < 2) return "<p style='color:#fff'>Chưa đủ dữ liệu</p>";
+
+  // SVG dimensions
+  const W = 900, H_TOP = 200, H_BOT = 180, PAD = 50, BOT_PAD = 30;
+  const colW = (W - PAD * 2) / (n - 1);
+
+  // Tọa độ X cho mỗi điểm
+  const xs = allPoints.map((_, i) => PAD + i * colW);
+
+  // ── Biểu đồ TRÊN: tổng xúc xắc (3-18) ──────────────────────
+  const sumMin = 3, sumMax = 18;
+  function sumY(v) {
+    return H_TOP - 20 - ((v - sumMin) / (sumMax - sumMin)) * (H_TOP - 40);
+  }
+
+  // Grid lines cho biểu đồ trên
+  const gridVals = [3, 6, 9, 12, 15, 18];
+  let topGridLines = "";
+  for (const v of gridVals) {
+    const y = sumY(v);
+    topGridLines += `<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>`;
+    topGridLines += `<text x="${PAD - 8}" y="${y + 4}" fill="rgba(255,255,255,0.6)" font-size="10" text-anchor="end">${v}</text>`;
+  }
+
+  // Polyline tổng
+  const sumPts = allPoints.map((p, i) => `${xs[i]},${sumY(p.sum)}`).join(" ");
+  let topPath = `<polyline points="${sumPts}" fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round"/>`;
+
+  // Dots tổng + labels
+  let topDots = "";
+  for (let i = 0; i < allPoints.length; i++) {
+    const p = allPoints[i];
+    const y = sumY(p.sum);
+    const isFake = p.fake;
+    const fillColor = isFake ? "#FF6B35" : (p.sum >= 11 ? "#F5C518" : "#C0C0C0");
+    const strokeColor = isFake ? "#FF3300" : "#333";
+    topDots += `<circle cx="${xs[i]}" cy="${y}" r="${isFake ? 7 : 6}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="${isFake ? 2 : 1.5}"/>`;
+    topDots += `<text x="${xs[i]}" y="${y - 10}" fill="${isFake ? "#FF6B35" : "#FFD700"}" font-size="${isFake ? 11 : 10}" text-anchor="middle" font-weight="${isFake ? 'bold' : 'normal'}">${p.sum}</text>`;
+    if (isFake) {
+      topDots += `<text x="${xs[i]}" y="${y + 20}" fill="#FF6B35" font-size="9" text-anchor="middle" font-style="italic">DỰ</text>`;
+    }
+  }
+
+  // ── Biểu đồ DƯỚI: từng xúc xắc (1-6) ───────────────────────
+  const diceMin = 1, diceMax = 6;
+  const botTop = H_TOP + 30;
+  function diceY(v) {
+    return botTop + H_BOT - 15 - ((v - diceMin) / (diceMax - diceMin)) * (H_BOT - 30);
+  }
+
+  // Grid lines dưới
+  let botGridLines = "";
+  for (let v = 1; v <= 6; v++) {
+    const y = diceY(v);
+    botGridLines += `<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
+    botGridLines += `<text x="${PAD - 8}" y="${y + 4}" fill="rgba(255,255,255,0.5)" font-size="10" text-anchor="end">${v}</text>`;
+  }
+
+  // 3 đường xúc xắc
+  const diceColors = ["#FF69B4", "#FF4444", "#66FF66"]; // pink, red, green (như game)
+  let botPaths = "", botDots = "";
+
+  for (let d = 0; d < 3; d++) {
+    const vals = d === 0 ? "d1" : d === 1 ? "d2" : "d3";
+    const pts = allPoints.map((p, i) => `${xs[i]},${diceY(p[vals])}`).join(" ");
+    botPaths += `<polyline points="${pts}" fill="none" stroke="${diceColors[d]}" stroke-width="2" stroke-linejoin="round" opacity="0.9"/>`;
+    for (let i = 0; i < allPoints.length; i++) {
+      const p = allPoints[i];
+      const y = diceY(p[vals]);
+      const isFake = p.fake;
+      botDots += `<circle cx="${xs[i]}" cy="${y}" r="${isFake ? 6 : 5}" fill="${diceColors[d]}" stroke="${isFake ? "#FF3300" : "#1a1a1a"}" stroke-width="${isFake ? 2 : 1.5}" opacity="${isFake ? 1 : 0.95}"/>`;
+    }
+  }
+
+  // Vertical line dự đoán
+  const predX = xs[xs.length - 1];
+  const predLine = `
+    <line x1="${predX}" y1="0" x2="${predX}" y2="${H_TOP + H_BOT + 40}" stroke="rgba(255,100,0,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/>
+  `;
+
+  const totalH = H_TOP + H_BOT + 60;
+
+  const svgContent = `
+<svg viewBox="0 0 ${W} ${totalH}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:900px;display:block;margin:0 auto">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a1a00"/>
+      <stop offset="100%" stop-color="#1a0d00"/>
+    </linearGradient>
+  </defs>
+  <rect width="${W}" height="${totalH}" fill="url(#bgGrad)" rx="8"/>
+  ${predLine}
+  ${topGridLines}
+  ${topPath}
+  ${topDots}
+  <line x1="${PAD}" y1="${H_TOP + 15}" x2="${W - PAD}" y2="${H_TOP + 15}" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+  ${botGridLines}
+  ${botPaths}
+  ${botDots}
+  <!-- Phiên labels bottom -->
+  ${allPoints.map((p, i) => `
+    <text x="${xs[i]}" y="${totalH - 5}" fill="${p.fake ? '#FF6B35' : 'rgba(255,255,255,0.5)'}" font-size="${p.fake ? 9 : 8}" text-anchor="middle" font-weight="${p.fake ? 'bold' : 'normal'}">${String(p.phien).slice(-4)}</text>
+  `).join("")}
+  <!-- Legend -->
+  <circle cx="${W - 180}" cy="${H_TOP + 8}" r="5" fill="#FF69B4"/>
+  <text x="${W - 172}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 1</text>
+  <circle cx="${W - 120}" cy="${H_TOP + 8}" r="5" fill="#FF4444"/>
+  <text x="${W - 112}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 2</text>
+  <circle cx="${W - 60}" cy="${H_TOP + 8}" r="5" fill="#66FF66"/>
+  <text x="${W - 52}" y="${H_TOP + 12}" fill="rgba(255,255,255,0.7)" font-size="10">Xí Ngầu 3</text>
+</svg>`;
+
+  return svgContent;
+}
+
+// ══════════════════════════════════════════════════════════════
 // HTTP SERVER
 // ══════════════════════════════════════════════════════════════
 http.createServer(async (req, res) => {
@@ -757,7 +597,7 @@ http.createServer(async (req, res) => {
 
   const url = new URL(req.url, "http://localhost");
 
-  // ── /predict ────────────────────────────────────────────────
+  // ── / và /predict ───────────────────────────────────────────
   if (url.pathname === "/predict" || url.pathname === "/") {
     await syncHistory();
 
@@ -797,6 +637,8 @@ http.createServer(async (req, res) => {
       phien_du_doan:  phienDuDoan,
       du_doan:        pred.next === "T" ? "Tài" : "Xỉu",
       do_tin_cay:     pred.conf + "%",
+      ly_do:          pred.reason,
+      chi_tiet:       pred.detail,
       pattern,
       id:             BOT_ID
     }));
@@ -806,67 +648,233 @@ http.createServer(async (req, res) => {
   // ── /history ─────────────────────────────────────────────────
   if (url.pathname === "/history") {
     await syncHistory();
-    const lim = Math.min(parseInt(url.searchParams.get("limit") || "20"), 200);
+
+    const lim = 50; // luôn lấy 50 phiên gần nhất
+    const data = history.slice(0, lim).map(h => ({
+      phien:     h.phien,
+      xuc_xac:   h.dice ? [h.dice.d1, h.dice.d2, h.dice.d3] : null,
+      tong:      h.dice?.sum ?? null,
+      ket_qua:   h.type === "T" ? "Tài" : "Xỉu",
+      tai_pct:   Math.round(h.ratio * 100) + "%",
+      xiu_pct:   Math.round((1 - h.ratio) * 100) + "%",
+      cuoc_tai:  h.sTB,
+      cuoc_xiu:  h.bTB,
+      nguoi_tai: h.sTU,
+      nguoi_xiu: h.bTU
+    }));
+
     res.writeHead(200);
     res.end(JSON.stringify({
-      total: history.length,
-      data:  history.slice(0, lim).map(h => ({
-        phien:      h.phien,
-        tai_pct:    Math.round(h.ratio * 100) + "%",
-        xiu_pct:    Math.round((1 - h.ratio) * 100) + "%",
-        cuoc_tai:   h.sTB,
-        cuoc_xiu:   h.bTB,
-        nguoi_tai:  h.sTU,
-        nguoi_xiu:  h.bTU,
-        xuc_xac:    h.dice ? [h.dice.d1, h.dice.d2, h.dice.d3] : null,
-        ket_qua:    h.type === "T" ? "Tài" : "Xỉu"
-      }))
+      tong_phien: history.length,
+      lay_50_gan_nhat: data.length,
+      data
     }));
     return;
   }
 
-  // ── /pattern ──────────────────────────────────────────────────
-  if (url.pathname === "/pattern") {
+  // ── /bieudo ───────────────────────────────────────────────────
+  if (url.pathname === "/bieudo") {
     await syncHistory();
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+
     if (!history.length) {
       res.writeHead(503);
-      res.end(JSON.stringify({ error: "Chưa có dữ liệu" }));
+      res.end("<html><body style='background:#1a0d00;color:#fff;font-family:sans-serif;padding:40px'><h2>Chưa có dữ liệu</h2></body></html>");
       return;
     }
-    const seq = history.map(h => h.type);
-    const pat = detectPattern(seq);
-    const streaks = []; let curS = { v: seq[0], len: 1 };
-    for (let i = 1; i < Math.min(seq.length, 30); i++) {
-      if (seq[i] === curS.v) curS.len++;
-      else { streaks.push({ ...curS }); curS = { v: seq[i], len: 1 }; }
-    }
-    streaks.push(curS);
-    res.writeHead(200);
-    res.end(JSON.stringify({
-      pattern_20:     seq.slice(0,20).map(x=>x==="T"?"t":"x").join(""),
-      cau_hien_tai:   pat ? pat.name : "Không rõ cầu",
-      do_tin_cay_cau: pat ? Math.round(pat.conf*100)+"%" : "N/A",
-      chuoi_gan:      streaks.slice(0,8).map(s => ({
-        ket_qua:  s.v === "T" ? "Tài" : "Xỉu",
-        so_phien: s.len
-      }))
-    }));
-    return;
-  }
 
-  // ── /stats ────────────────────────────────────────────────────
-  if (url.pathname === "/stats") {
-    const out = {};
-    for (const n of ALGOS) {
-      const a = acc[n];
-      out[n] = {
-        do_chinh_xac: a.t ? Math.round(a.c/a.t*100)+"%" : "N/A",
-        trong_so:     Math.round(getWeight(n)*100)/100,
-        mau:          Math.round(a.t)
-      };
-    }
+    const pred     = predict(history);
+    const fakeDice = generateFakeDiceForPrediction(pred, history);
+    const svgChart = renderChartHTML(history, pred, fakeDice);
+
+    const lastLocked   = history[0];
+    const phienDuDoan  = pendingSession
+      ? Number(pendingSession.phien)
+      : Number(lastLocked?.phien ?? 0) + 1;
+
+    const predColor = pred.next === "T" ? "#F5C518" : "#C0C0C0";
+    const predBg    = pred.next === "T" ? "linear-gradient(135deg,#7b5800,#c88000)" : "linear-gradient(135deg,#3a3a5c,#6060aa)";
+
+    const html = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Lịch Sử Phiên - Tài Xỉu</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@400;600;700;900&family=Roboto+Mono:wght@400;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, #2a1500 0%, #0d0800 60%);
+    min-height: 100vh;
+    font-family: 'Saira Condensed', sans-serif;
+    color: #fff;
+    padding: 16px;
+  }
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    background: rgba(60,30,0,0.6);
+    border: 2px solid #8B6914;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 0 40px rgba(200,140,0,0.3);
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.8rem;
+    font-weight: 900;
+    letter-spacing: 3px;
+    color: #FFD700;
+    text-shadow: 0 0 20px rgba(255,215,0,0.5);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+  }
+  .latest {
+    text-align: center;
+    margin-bottom: 16px;
+    font-size: 1rem;
+    color: #FFD700;
+  }
+  .latest span { color: #fff; font-weight: 700; }
+  .chart-wrap {
+    background: rgba(20,10,0,0.8);
+    border: 1px solid #5a4200;
+    border-radius: 8px;
+    padding: 12px 4px;
+    margin-bottom: 16px;
+    overflow-x: auto;
+  }
+  .pred-box {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .pred-card {
+    background: ${predBg};
+    border: 2px solid ${predColor};
+    border-radius: 10px;
+    padding: 14px 28px;
+    text-align: center;
+    min-width: 180px;
+    box-shadow: 0 0 20px rgba(255,215,0,0.2);
+  }
+  .pred-card .label { font-size: 0.8rem; color: rgba(255,255,255,0.7); margin-bottom: 4px; letter-spacing: 1px; }
+  .pred-card .value { font-size: 2rem; font-weight: 900; color: ${predColor}; text-shadow: 0 0 15px ${predColor}; }
+  .pred-card .sub   { font-size: 0.8rem; color: rgba(255,255,255,0.6); margin-top: 4px; }
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .info-card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,215,0,0.2);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .info-card .k { font-size: 0.7rem; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; }
+  .info-card .v { font-size: 1rem; font-weight: 700; color: #FFD700; margin-top: 2px; }
+  .fake-dice {
+    text-align: center;
+    background: rgba(255,100,0,0.1);
+    border: 1px dashed rgba(255,100,0,0.5);
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: rgba(255,150,50,0.9);
+  }
+  .api-links {
+    text-align: center;
+    margin-top: 10px;
+    font-size: 0.8rem;
+  }
+  .api-links a {
+    color: #8B6914;
+    margin: 0 8px;
+    text-decoration: none;
+  }
+  .api-links a:hover { color: #FFD700; }
+  .refresh-btn {
+    display: block;
+    margin: 0 auto 14px;
+    padding: 8px 24px;
+    background: linear-gradient(135deg,#7b5800,#c88000);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-family: 'Saira Condensed',sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 1px;
+  }
+  .refresh-btn:hover { background: linear-gradient(135deg,#c88000,#FFD700); color: #000; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎲 Lịch Sử Phiên</h1>
+  <div class="latest">
+    Phiên gần nhất: <span>#${lastLocked?.phien ?? "—"}</span>
+    &nbsp;|&nbsp;
+    <span style="color:${lastLocked?.type === "T" ? "#F5C518" : "#C0C0C0"}">${lastLocked?.type === "T" ? "Tài" : "Xỉu"}
+    ${lastLocked?.dice ? `(${lastLocked.dice.d1}-${lastLocked.dice.d2}-${lastLocked.dice.d3})` : ""}</span>
+  </div>
+
+  <div class="chart-wrap">
+    ${svgChart}
+  </div>
+
+  <div class="pred-box">
+    <div class="pred-card">
+      <div class="label">DỰ ĐOÁN PHIÊN</div>
+      <div class="value" style="font-size:1rem;margin-bottom:4px">#${phienDuDoan}</div>
+      <div class="value">${pred.next === "T" ? "🟡 TÀI" : "⚪ XỈU"}</div>
+      <div class="sub">Tin cậy: ${pred.conf}%</div>
+    </div>
+    <div class="pred-card" style="background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.2)">
+      <div class="label">LÝ DO</div>
+      <div class="value" style="font-size:1rem;color:#aaa;margin-top:8px">${pred.reason}</div>
+    </div>
+  </div>
+
+  <div class="fake-dice">
+    🎲 Xúc xắc dự đoán phiên ${phienDuDoan}:
+    <strong>${fakeDice.d1} - ${fakeDice.d2} - ${fakeDice.d3}</strong>
+    = Tổng <strong>${fakeDice.sum}</strong>
+    → <strong>${fakeDice.sum >= 11 ? "TÀI" : "XỈU"}</strong>
+    (điểm cam trên biểu đồ)
+  </div>
+
+  <div class="info-grid">
+    ${pred.detail.sumChart ? `<div class="info-card"><div class="k">Biểu đồ Tổng</div><div class="v">${pred.detail.sumChart.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.sumChart.conf}%)</div></div>` : ""}
+    ${pred.detail.diceChart ? `<div class="info-card"><div class="k">Biểu đồ Xúc Xắc</div><div class="v">${pred.detail.diceChart.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.diceChart.conf}%)</div></div>` : ""}
+    ${pred.detail.pattern ? `<div class="info-card"><div class="k">Pattern Cầu</div><div class="v">${pred.detail.pattern.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.pattern.conf}%)</div></div>` : ""}
+    ${pred.detail.betting ? `<div class="info-card"><div class="k">Tỷ Lệ Cược</div><div class="v">${pred.detail.betting.next === "T" ? "Tài" : "Xỉu"} (${pred.detail.betting.conf}%)</div></div>` : ""}
+    <div class="info-card"><div class="k">Tổng Phiên</div><div class="v">${history.length}</div></div>
+    <div class="info-card"><div class="k">Bot ID</div><div class="v" style="font-size:0.8rem">${BOT_ID}</div></div>
+  </div>
+
+  <button class="refresh-btn" onclick="location.reload()">🔄 Làm Mới</button>
+
+  <div class="api-links">
+    <a href="/predict">/ JSON</a>
+    <a href="/history">/ History 50</a>
+    <a href="/bieudo">/ Biểu Đồ</a>
+    <a href="/debug">/ Debug</a>
+  </div>
+</div>
+</body>
+</html>`;
+
     res.writeHead(200);
-    res.end(JSON.stringify({ algo_stats: out, history_count: history.length, source: SOURCE_URL }));
+    res.end(html);
     return;
   }
 
@@ -879,8 +887,7 @@ http.createServer(async (req, res) => {
       pending_session: pendingSession,
       last_dice:       lastDice,
       last_locked:     history[0] ?? null,
-      history_count:   history.length,
-      consecutive_pred: consecutivePred
+      history_count:   history.length
     }, null, 2));
     return;
   }
@@ -888,12 +895,13 @@ http.createServer(async (req, res) => {
   res.writeHead(404);
   res.end(JSON.stringify({
     error: "Không tìm thấy",
-    endpoints: ["/predict", "/history", "/pattern", "/stats", "/debug"]
+    endpoints: ["/", "/predict", "/history", "/bieudo", "/debug"]
   }));
 
 }).listen(PORT, () => {
-  console.log("✅ Sic-bo prediction server port " + PORT);
+  console.log("✅ Tài Xỉu prediction server port " + PORT);
   console.log("   Source: " + SOURCE_URL);
+  console.log("   Routes: / | /predict | /history | /bieudo | /debug");
   syncHistory();
   setInterval(syncHistory, 10000);
 });
