@@ -304,27 +304,58 @@ function analyzePattern(hist) {
 
 // ── Phân tích tỷ lệ cược (crowd wisdom) ─────────────────────────
 function analyzeBetting(hist) {
-  if (!hist.length) return null;
-  const h = hist[0];
-  const r = h.ratio ?? 0.5;
+  // Ưu tiên ratio của pendingSession (mới nhất) nếu có
+  const r = pendingSession?.ratio ?? hist[0]?.ratio ?? 0.5;
 
   // Crowd thường sai khi lệch mạnh → contrarian
-  if (r > 0.68) return { next: "T", conf: 0.57, reason: `Crowd Tài ${Math.round(r*100)}%` };
-  if (r < 0.32) return { next: "X", conf: 0.57, reason: `Crowd Xỉu ${Math.round((1-r)*100)}%` };
+  if (r > 0.68) return { next: "T", conf: 0.58, reason: `Crowd Tài ${Math.round(r*100)}%` };
+  if (r < 0.32) return { next: "X", conf: 0.58, reason: `Crowd Xỉu ${Math.round((1-r)*100)}%` };
 
   // Crowd moderate → follow
-  if (r > 0.60) return { next: "T", conf: 0.53, reason: `Crowd nhẹ Tài` };
-  if (r < 0.40) return { next: "X", conf: 0.53, reason: `Crowd nhẹ Xỉu` };
+  if (r > 0.60) return { next: "T", conf: 0.54, reason: `Crowd nhẹ Tài ${Math.round(r*100)}%` };
+  if (r < 0.40) return { next: "X", conf: 0.54, reason: `Crowd nhẹ Xỉu ${Math.round((1-r)*100)}%` };
 
-  return null;
+  // Gần 50/50
+  return { next: r >= 0.5 ? "T" : "X", conf: 0.51, reason: `Cân bằng Tài ${Math.round(r*100)}% / Xỉu ${Math.round((1-r)*100)}%` };
 }
 
 // ── ENSEMBLE dự đoán tổng hợp ─────────────────────────────────
 function predict(hist) {
-  if (hist.length < 3) return {
-    next: "?", conf: 0, reason: "Chưa đủ dữ liệu",
-    detail: { sumChart: null, diceChart: null, pattern: null, betting: null }
-  };
+  // Fallback khi không có history: dùng tỷ lệ cược pendingSession
+  if (hist.length < 1) {
+    const ps = pendingSession;
+    if (ps) {
+      const r = ps.ratio ?? 0.5;
+      const next = r >= 0.5 ? "T" : "X";
+      const conf = Math.round((0.50 + Math.abs(r - 0.5) * 0.6) * 100);
+      const reason = `Tỷ lệ cược: Tài ${Math.round(r*100)}% / Xỉu ${Math.round((1-r)*100)}%`;
+      return { next, conf, reason,
+        detail: { sumChart: null, diceChart: null, pattern: null,
+          betting: { next, conf, reason } } };
+    }
+    return { next: "T", conf: 52, reason: "Khởi động...",
+      detail: { sumChart: null, diceChart: null, pattern: null, betting: null } };
+  }
+
+  // 1-2 phiên: dùng betting + cầu đơn giản
+  if (hist.length < 3) {
+    const bettingRes = analyzeBetting(hist);
+    const lastType = hist[0]?.type ?? "T";
+    // Nếu có pendingSession thì dùng ratio của nó (mới hơn)
+    const ps = pendingSession;
+    let bettingFinal = bettingRes;
+    if (ps) {
+      const r = ps.ratio ?? 0.5;
+      if (r > 0.60) bettingFinal = { next: "T", conf: 0.53 + (r-0.60)*0.3, reason: `Crowd Tài ${Math.round(r*100)}%` };
+      else if (r < 0.40) bettingFinal = { next: "X", conf: 0.53 + (0.40-r)*0.3, reason: `Crowd Xỉu ${Math.round((1-r)*100)}%` };
+    }
+    const next = bettingFinal?.next ?? lastType;
+    const conf = bettingFinal ? Math.round(bettingFinal.conf * 100) : 52;
+    const reason = bettingFinal?.reason ?? `Ít dữ liệu — theo ${next === "T" ? "Tài" : "Xỉu"}`;
+    return { next, conf, reason,
+      detail: { sumChart: null, diceChart: null, pattern: null,
+        betting: { next, conf, reason } } };
+  }
 
   const sumChartResult  = analyzeSumChart(hist);
   const diceChartResult = analyzeDiceChart(hist);
@@ -601,25 +632,38 @@ http.createServer(async (req, res) => {
   if (url.pathname === "/predict" || url.pathname === "/") {
     await syncHistory();
 
+    // lastLocked = phiên cuối đã có kết quả (trong history)
+    // pendingSession = phiên đang mở cược (chưa có kết quả)
     const lastLocked = history[0] ?? null;
-    const cur        = pendingSession ?? lastLocked;
 
-    if (!cur) {
+    if (!lastLocked && !pendingSession) {
       res.writeHead(503);
       res.end(JSON.stringify({ error: "Chưa có dữ liệu" }));
       return;
     }
 
+    // Phiên hiện tại = phiên gần nhất đã có kết quả (lastLocked)
+    // hoặc nếu chưa có history thì lấy pendingSession tạm
+    const phienHienTai = Number(lastLocked?.phien ?? pendingSession?.phien ?? 0);
+
+    // Kết quả phiên hiện tại (từ history đã lock)
     const ketQua = lastLocked
       ? (lastLocked.type === "T" ? "Tài" : "Xỉu")
       : null;
 
-    const diceSource = lastLocked?.dice ?? (lastDice ?? null);
+    // Xúc xắc phiên hiện tại
+    const diceSource = lastLocked?.dice ?? lastDice ?? null;
     const xucXac     = diceSource ? [diceSource.d1, diceSource.d2, diceSource.d3] : null;
 
-    const phienHienTai = Number(lastLocked?.phien ?? cur.phien);
-    const phienDuDoan  = pendingSession
-      ? Number(pendingSession.phien)
+    // Phiên dự đoán = phiên ĐANG mở cược (pendingSession) nếu có,
+    // hoặc phiên hiện tại + 1
+    const phienDuDoan = pendingSession
+      ? Number(pendingSession.phien)        // phiên đang cược → đây là phiên cần dự đoán
+      : phienHienTai + 1;                   // chưa có pending → tiếp theo
+
+    // Đảm bảo phiên dự đoán luôn > phiên hiện tại
+    const phienDuDoanFinal = phienDuDoan > phienHienTai
+      ? phienDuDoan
       : phienHienTai + 1;
 
     const pred = predict(history);
@@ -634,11 +678,9 @@ http.createServer(async (req, res) => {
       phien_hien_tai: phienHienTai,
       ket_qua:        ketQua,
       xuc_xac:        xucXac,
-      phien_du_doan:  phienDuDoan,
-      du_doan:        pred.next === "T" ? "Tài" : "Xỉu",
+      phien_du_doan:  phienDuDoanFinal,
+      du_doan:        pred.next === "T" ? "Tài" : pred.next === "X" ? "Xỉu" : "?",
       do_tin_cay:     pred.conf + "%",
-      ly_do:          pred.reason,
-      chi_tiet:       pred.detail,
       pattern,
       id:             BOT_ID
     }));
@@ -689,9 +731,13 @@ http.createServer(async (req, res) => {
     const svgChart = renderChartHTML(history, pred, fakeDice);
 
     const lastLocked   = history[0];
-    const phienDuDoan  = pendingSession
+    const _phienDuDoanRaw = pendingSession
       ? Number(pendingSession.phien)
       : Number(lastLocked?.phien ?? 0) + 1;
+    const _phienHienTaiRaw = Number(lastLocked?.phien ?? 0);
+    const phienDuDoan = _phienDuDoanRaw > _phienHienTaiRaw
+      ? _phienDuDoanRaw
+      : _phienHienTaiRaw + 1;
 
     const predColor = pred.next === "T" ? "#F5C518" : "#C0C0C0";
     const predBg    = pred.next === "T" ? "linear-gradient(135deg,#7b5800,#c88000)" : "linear-gradient(135deg,#3a3a5c,#6060aa)";
